@@ -398,8 +398,18 @@ class Database:
             if annotation["status"] == "verified":
                 self._bump_dataset_revision(db)
 
-    def delete_pending_proposals(self, video_id: str, *, source: str, frame_number: int | None = None) -> int:
-        query = """DELETE FROM annotations WHERE status='pending' AND source=? AND frame_id IN (
+    def delete_pending_proposals(
+        self,
+        video_id: str,
+        *,
+        source: str,
+        frame_number: int | None = None,
+        model_only: bool = False,
+    ) -> int:
+        query = "DELETE FROM annotations WHERE status='pending' AND source=?"
+        if model_only:
+            query += " AND model_id IS NOT NULL"
+        query += """ AND frame_id IN (
                        SELECT id FROM frames WHERE video_id=?"""
         params: list[Any] = [source, video_id]
         if frame_number is not None:

@@ -24,6 +24,8 @@ The `source` audit field is one of:
 
 `ai` and `tracker` are pending sources. The suffixed forms record the student's decision.
 
+`track_id` identifies one uninterrupted visible track segment; it is not an assertion that two appearances belong to the same biological individual. An identity ends when a fish leaves the image boundary. A later entrance receives a new ID, with no re-identification across exits.
+
 ## Coordinates
 
 SQLite and project backups store `x`, `y`, `width` and `height` between zero and one relative to the uncropped source frame. `x` and `y` are the top-left corner.

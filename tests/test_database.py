@@ -41,6 +41,20 @@ class DatabaseWorkflowTests(unittest.TestCase):
         self.assertEqual(self.db.next_pending_frame(self.video["id"], 20), 40)
         self.assertEqual(self.db.next_pending_frame(self.video["id"], 40), 20)
 
+    def test_detector_rerun_preserves_pending_box_seed_proposals(self):
+        seed = self.add(0, 10, "pending", "tracker")
+        model = self.db.register_model("detector.pt", 0.5, 20, "training-run")
+        detector = self.db.add_annotation(
+            video_id=self.video["id"], frame_number=20, time_seconds=.8,
+            species_id=self.species[0]["id"], track_id="BT-00001",
+            box=(.2, .2, .2, .1), status="pending", source="tracker", model_id=model["id"]
+        )
+        deleted = self.db.delete_pending_proposals(self.video["id"], source="tracker", model_only=True)
+        self.assertEqual(deleted, 1)
+        self.assertEqual(self.db.get_annotation(seed["id"])["status"], "pending")
+        with self.assertRaises(KeyError):
+            self.db.get_annotation(detector["id"])
+
     def test_modified_ai_proposal_is_a_corrected_verified_label(self):
         pending = self.add(0, 20, "pending", "ai")
         self.db.update_annotation(pending["id"], species_id=self.species[1]["id"], width=0.25)

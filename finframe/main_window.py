@@ -46,6 +46,7 @@ from .canvas import AnnotationCanvas
 from .database import Database
 from .dataset import DatasetError, export_dataset, export_project_backup
 from .inference import InferenceEngine, InferenceError
+from .seed_tracking import SeedTrackingSession, SeedTrackingUnavailable
 from .training import TrainingCoordinator
 
 
@@ -116,7 +117,7 @@ class TrackingWorker(QThread):
     def run(self) -> None:
         added = 0
         try:
-            self.db.delete_pending_proposals(self.video["id"], source="tracker")
+            self.db.delete_pending_proposals(self.video["id"], source="tracker", model_only=True)
             total = max(1, int(self.video["frame_count"]))
             for tracked in self.engine.track_video(self.video["path"], tracker=self.tracker, confidence=self.confidence, sample_every=self.sample_every):
                 frame_number = int(tracked["frame_number"])
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
         self.current_frame = 0
         self.selected_annotation_id: str | None = None
         self.tracking_worker: TrackingWorker | None = None
+        self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
         self.resize(1480, 920)
         self._build_ui()
@@ -248,6 +250,18 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.timeline, 1)
         controls.addWidget(self.frame_label)
         video_layout.addLayout(controls)
+        seed_controls = QHBoxLayout()
+        self.seed_tracking_checkbox = QCheckBox("Propagate drawn boxes while playing")
+        self.seed_tracking_checkbox.setChecked(True)
+        self.seed_tracking_checkbox.toggled.connect(self.seed_tracking_toggled)
+        stop_seed_tracking = QPushButton("Stop propagation")
+        stop_seed_tracking.clicked.connect(self.stop_seed_tracking)
+        self.seed_tracking_status = QLabel("0 active seeded tracks")
+        seed_controls.addWidget(self.seed_tracking_checkbox)
+        seed_controls.addWidget(stop_seed_tracking)
+        seed_controls.addWidget(self.seed_tracking_status)
+        seed_controls.addStretch(1)
+        video_layout.addLayout(seed_controls)
         ai_controls = QHBoxLayout()
         self.ai_frame_button = QPushButton("AI suggest current frame")
         self.ai_frame_button.clicked.connect(self.suggest_current_frame)
@@ -353,7 +367,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
 
         self.play_timer = QTimer(self)
-        self.play_timer.timeout.connect(lambda: self.seek_frame(self.current_frame + 1))
+        self.play_timer.timeout.connect(self.advance_playback)
         delete_shortcut = QAction(self)
         delete_shortcut.setShortcut(QKeySequence.StandardKey.Delete)
         delete_shortcut.triggered.connect(self.delete_annotation)
@@ -490,16 +504,22 @@ class MainWindow(QMainWindow):
             video = self.db.relink_video(video_id, replacement, duration=frames / max(0.001, fps), width=width, height=height, fps=fps, frame_count=frames)
         if self.capture:
             self.capture.release()
+        self.seed_tracking.clear()
+        self._refresh_seed_tracking_status()
         self.capture = cv2.VideoCapture(video["path"])
         self.current_video = video
         self.timeline.setRange(0, max(0, int(video["frame_count"]) - 1))
         self.seek_frame(0)
         self.statusBar().showMessage(f"Opened {video['file_name']} · {video['width']}×{video['height']} · {video['fps']:.2f} fps")
 
-    def seek_frame(self, frame_number: int) -> None:
+    def seek_frame(self, frame_number: int, propagate_seeded: bool = False) -> None:
         if not self.capture or not self.current_video:
             return
         frame_number = max(0, min(int(self.current_video["frame_count"]) - 1, int(frame_number)))
+        previous_frame = self.current_frame
+        if not propagate_seeded and self.current_image is not None and frame_number != previous_frame:
+            self.seed_tracking.clear()
+            self._refresh_seed_tracking_status("Propagation stopped after seeking")
         self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         ok, image = self.capture.read()
         if not ok:
@@ -508,6 +528,8 @@ class MainWindow(QMainWindow):
             return
         self.current_frame = frame_number
         self.current_image = image
+        if propagate_seeded and frame_number == previous_frame + 1:
+            self._propagate_seeded_boxes(image, frame_number)
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         qimage = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
@@ -518,6 +540,18 @@ class MainWindow(QMainWindow):
         self.frame_label.setText(f"Frame {frame_number:,} · {self._timecode(seconds)}")
         self.refresh_frame_annotations()
 
+    def advance_playback(self) -> None:
+        if not self.current_video:
+            return
+        if self.current_frame >= int(self.current_video["frame_count"]) - 1:
+            self.play_timer.stop()
+            self.play_button.setText("▶")
+            return
+        self.seek_frame(
+            self.current_frame + 1,
+            propagate_seeded=self.seed_tracking_checkbox.isChecked(),
+        )
+
     def toggle_playback(self) -> None:
         if not self.current_video:
             return
@@ -525,8 +559,79 @@ class MainWindow(QMainWindow):
             self.play_timer.stop()
             self.play_button.setText("▶")
         else:
+            if self.seed_tracking_checkbox.isChecked():
+                self._seed_current_frame_annotations()
             self.play_timer.start(max(10, round(1000 / max(1.0, self._fps()))))
             self.play_button.setText("Ⅱ")
+
+    def seed_tracking_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self.seed_tracking.clear()
+            self._refresh_seed_tracking_status("Automatic box propagation disabled")
+        else:
+            self._refresh_seed_tracking_status("New boxes will propagate during playback")
+
+    def stop_seed_tracking(self) -> None:
+        self.seed_tracking.clear()
+        self._refresh_seed_tracking_status("All seeded tracks stopped")
+
+    def _refresh_seed_tracking_status(self, message: str | None = None) -> None:
+        if hasattr(self, "seed_tracking_status"):
+            count = self.seed_tracking.active_count
+            self.seed_tracking_status.setText(f"{count} active seeded track{'s' if count != 1 else ''}")
+        if message and self.statusBar():
+            self.statusBar().showMessage(message, 5000)
+
+    def _seed_annotation(self, annotation: dict[str, Any]) -> None:
+        if not self.seed_tracking_checkbox.isChecked() or self.current_image is None:
+            return
+        if int(annotation["frame_number"]) != self.current_frame:
+            return
+        try:
+            self.seed_tracking.seed(annotation, self.current_image, self.current_frame)
+            self._refresh_seed_tracking_status()
+        except SeedTrackingUnavailable as exc:
+            self.seed_tracking_checkbox.setChecked(False)
+            self._refresh_seed_tracking_status(str(exc))
+
+    def _seed_current_frame_annotations(self) -> None:
+        if not self.current_video or self.current_image is None:
+            return
+        for annotation in self.db.annotations_for_frame(self.current_video["id"], self.current_frame):
+            self._seed_annotation(annotation)
+
+    def _propagate_seeded_boxes(self, image: Any, frame_number: int) -> None:
+        if not self.current_video or not self.seed_tracking.active_count:
+            return
+        predictions, ended = self.seed_tracking.update(image, frame_number)
+        existing = self.db.annotations_for_frame(self.current_video["id"], frame_number)
+        existing_tracks = {item["track_id"] for item in existing}
+        for prediction in predictions:
+            if prediction.track_id in existing_tracks:
+                continue
+            self.db.add_annotation(
+                video_id=self.current_video["id"],
+                frame_number=frame_number,
+                time_seconds=frame_number / max(0.001, self._fps()),
+                species_id=prediction.species_id,
+                track_id=prediction.track_id,
+                box=prediction.box,
+                status="pending",
+                source="tracker",
+                confidence=None,
+                model_id=None,
+                created_by=self.current_project.get("observer", "") if self.current_project else "",
+                life_stage=prediction.life_stage,
+                activity=prediction.activity,
+                uncertain=prediction.uncertain,
+            )
+        exited = sum(item.reason == "left_frame" for item in ended)
+        message = None
+        if exited:
+            message = f"{exited} track{'s' if exited != 1 else ''} ended at the frame boundary; any return will receive a new identity"
+        elif ended:
+            message = f"{len(ended)} uncertain track{'s' if len(ended) != 1 else ''} stopped"
+        self._refresh_seed_tracking_status(message)
 
     def refresh_species(self) -> None:
         query = self.species_search.text().strip().lower() if hasattr(self, "species_search") else ""
@@ -596,6 +701,7 @@ class MainWindow(QMainWindow):
         )
         self.selected_annotation_id = annotation["id"]
         self.refresh_frame_annotations()
+        self._seed_annotation(annotation)
         if suggestion:
             self.statusBar().showMessage("AI suggested a species for the drawn box — approve or correct it before it is counted", 8000)
         else:
@@ -605,6 +711,7 @@ class MainWindow(QMainWindow):
         self.db.update_annotation(annotation_id, x=box[0], y=box[1], width=box[2], height=box[3])
         self.refresh_frame_annotations()
         annotation = self.db.get_annotation(annotation_id)
+        self._seed_annotation(annotation)
         if annotation["status"] == "verified":
             self.training.maybe_schedule("verified box geometry changed")
 
@@ -664,7 +771,7 @@ class MainWindow(QMainWindow):
         if not self.selected_annotation_id:
             return
         before = self.db.get_annotation(self.selected_annotation_id)
-        self.db.update_annotation(
+        updated = self.db.update_annotation(
             self.selected_annotation_id,
             species_id=self.annotation_species.currentData(),
             track_id=self.annotation_track.text().strip(),
@@ -672,6 +779,9 @@ class MainWindow(QMainWindow):
             activity=self.annotation_activity.currentText(),
             uncertain=int(self.annotation_uncertain.isChecked()),
         )
+        if before["track_id"] != updated["track_id"]:
+            self.seed_tracking.stop(before["track_id"])
+        self._seed_annotation(updated)
         self.refresh_frame_annotations()
         if before["status"] == "verified":
             self.training.maybe_schedule("verified annotation corrected")
@@ -687,7 +797,10 @@ class MainWindow(QMainWindow):
     def reject_annotation(self) -> None:
         if not self.selected_annotation_id:
             return
+        annotation = self.db.get_annotation(self.selected_annotation_id)
         self.db.review_annotation(self.selected_annotation_id, "reject")
+        self.seed_tracking.stop(annotation["track_id"])
+        self._refresh_seed_tracking_status()
         self.selected_annotation_id = None
         self.refresh_frame_annotations()
 
@@ -724,6 +837,8 @@ class MainWindow(QMainWindow):
             return
         annotation = self.db.get_annotation(self.selected_annotation_id)
         self.db.delete_annotation(self.selected_annotation_id)
+        self.seed_tracking.stop(annotation["track_id"])
+        self._refresh_seed_tracking_status()
         self.selected_annotation_id = None
         self.refresh_frame_annotations()
         if annotation["status"] == "verified":
@@ -774,6 +889,7 @@ class MainWindow(QMainWindow):
         if self.tracking_worker and self.tracking_worker.isRunning():
             QMessageBox.information(self, "Tracking in progress", "Wait for the current tracking run to finish.")
             return
+        self.stop_seed_tracking()
         worker = TrackingWorker(self.db, self.inference, self.current_video, tracker, 0.25, 1)
         worker.progress.connect(lambda value, message: (self.tracking_progress.setValue(value), self.statusBar().showMessage(message)))
         worker.failed.connect(self.tracking_failed)

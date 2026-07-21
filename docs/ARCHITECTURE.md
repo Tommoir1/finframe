@@ -4,6 +4,7 @@
 PySide6 student interface
         |
         +-- OpenCV video/frame reader
+        +-- Default box-seeded CSRT/KCF/MIL propagation
         +-- SQLite project and annotation repository
         +-- Verified-only MaxN queries
         +-- COCO/YOLO/CSV dataset services
@@ -22,6 +23,12 @@ All database methods use short independent connections with foreign keys, WAL mo
 Inference writes only `pending` annotations. Verified-only SQL queries are used by MaxN, training statistics and dataset builders. This makes the approval boundary structural rather than dependent on a UI filter.
 
 Any modification to a verified label advances `verified_dataset_revision`. The training coordinator compares that revision with the last completed training snapshot, allowing corrections and deletions—not only new boxes—to trigger retraining.
+
+## Tracking identity boundary
+
+Drawing or correcting a box seeds the strongest available OpenCV CPU tracker. Sequential playback writes its propagated geometry as pending `tracker` proposals. Seeking, rejection, deletion or the explicit stop action ends propagation.
+
+Track IDs represent uninterrupted visibility only. If the last visible box touches the image boundary and then disappears, the seeded tracker retires that identity immediately. A boundary identity allocator applies the same rule to ByteTrack and BoT-SORT output, preventing reuse of an internal tracker ID after an exit. Missing detections away from an edge may retain an identity briefly as an in-frame occlusion. There is deliberately no cross-exit re-identification.
 
 ## Training lifecycle
 

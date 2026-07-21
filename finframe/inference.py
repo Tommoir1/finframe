@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .database import Database
+from .seed_tracking import BoundaryIdentityAllocator
 
 
 class InferenceError(RuntimeError):
@@ -109,6 +110,7 @@ class InferenceEngine:
             raise ValueError("tracker must be bytetrack or botsort")
         model, active = self._load()
         names = {int(key): str(value) for key, value in dict(model.names).items()}
+        identities = BoundaryIdentityAllocator("BT" if tracker == "bytetrack" else "BS")
         results = model.track(
             source=video_path,
             tracker=f"{tracker}.yaml",
@@ -121,7 +123,7 @@ class InferenceEngine:
             if frame_number % max(1, sample_every):
                 continue
             boxes = result.boxes
-            detections: list[dict[str, Any]] = []
+            raw_detections: list[dict[str, Any]] = []
             if boxes is not None and boxes.id is not None:
                 for track_id, class_id, score, coords in zip(
                     boxes.id.int().cpu().tolist(),
@@ -134,12 +136,13 @@ class InferenceEngine:
                     if species is None:
                         continue
                     x1, y1, x2, y2 = map(float, coords)
-                    detections.append({
+                    raw_detections.append({
                         "species_id": species["id"],
                         "box": (x1, y1, max(0.0001, x2 - x1), max(0.0001, y2 - y1)),
                         "confidence": float(score),
                         "model_id": active["id"],
                         "source": "tracker",
-                        "track_id": f"{tracker.upper()}-{int(track_id):05d}",
+                        "raw_track_id": int(track_id),
                     })
+            detections = identities.assign(frame_number, raw_detections)
             yield {"frame_number": frame_number, "detections": detections}

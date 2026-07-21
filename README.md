@@ -9,11 +9,12 @@ The application is local-first. Video remains on the workstation, while projects
 1. Create a survey project and record deployment, site and observer metadata.
 2. Add one or more source videos.
 3. Select a species and draw a box around every visible fish on an observation frame.
-4. FinFrame immediately calculates verified per-frame counts and per-species MaxN.
-5. Manual boxes enter the shared training dataset as verified labels.
-6. AI or tracker boxes enter as pending proposals and are visibly dashed.
-7. A student must approve, correct or reject every proposal.
-8. Only approved or corrected proposals enter MaxN, exports and retraining.
+4. Press Play. Every drawn box seeds a CPU tracker by default and is propagated through consecutive frames.
+5. FinFrame immediately calculates verified per-frame counts and per-species MaxN.
+6. Manual boxes enter the shared training dataset as verified labels.
+7. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
+8. A student must approve, correct or reject every proposal.
+9. Only approved or corrected proposals enter MaxN, exports and retraining.
 
 All projects in the database contribute to training. Opening another video does not discard earlier annotations.
 
@@ -24,6 +25,7 @@ Project backups can be imported into another FinFrame installation. This provide
 - Native PySide6 desktop interface; no browser or separate local web server
 - OpenCV video playback, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
+- Default box-seeded propagation during playback, with corrected boxes re-seeding the tracker
 - Shared species taxonomy, scientific names, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution
 - Verified per-frame counts and live per-species MaxN
@@ -46,6 +48,8 @@ AI output is never treated as truth. A detector or tracker proposal is stored as
 - released observation data
 
 Approving an unchanged proposal records `ai_verified` or `tracker_verified`. Changing its class, geometry or metadata before approval records `ai_corrected` or `tracker_corrected`. Rejected proposals remain outside the dataset.
+
+Track IDs describe one uninterrupted period of visibility, not an inferred biological individual. When a tracked box reaches the image boundary and disappears, FinFrame permanently retires that identity. A fish entering later always receives a new identity. FinFrame does not attempt re-identification or suggest that a returning fish is the same individual. Brief missed detections away from the image boundary may retain the existing identity as an in-frame occlusion.
 
 ## Frequent retraining
 
