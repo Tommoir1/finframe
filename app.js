@@ -1,9 +1,10 @@
-import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNormalized } from './dataset-utils.js';
+import { ZipStore, csvText, cocoBoxFromNormalized, mapLearningExamples, predictKnn, taxonomyAliases, yoloLineFromNormalized } from './dataset-utils.js';
 
 (() => {
   'use strict';
 
   const STORAGE_KEY = 'finframe-project-v1';
+  const LEARNING_LIBRARY_KEY = 'finframe-class-assist-library-v1';
   const TRACKER_SERVICE_URL = 'http://127.0.0.1:8765';
   const colors = ['#ff8465', '#41bda8', '#efb24e', '#5d9bd3', '#c47ccc', '#77ad5c', '#e0648d'];
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -38,6 +39,14 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     return emptyProject();
   }
 
+  function restoreLearningLibrary() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LEARNING_LIBRARY_KEY));
+      if (saved?.schemaVersion === '1.0' && Array.isArray(saved.examples)) return saved;
+    } catch (_) { /* ignored */ }
+    return { schemaVersion: '1.0', updatedAt: new Date().toISOString(), examples: [] };
+  }
+
   function upgradeProject(project) {
     project.model = { enabled: false, minSamples: 4, minClasses: 2, predictions: 0, accepted: 0, corrected: 0, featureVersion: 1, ...(project.model || {}) };
     project.tracking = { runs: 0, proposals: 0, accepted: 0, corrected: 0, lastTracker: '', ...(project.tracking || {}) };
@@ -49,6 +58,8 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   }
 
   let state = upgradeProject(restoreProject());
+  let learningLibrary = restoreLearningLibrary();
+  let learningStorageError = false;
   let currentTime = 0;
   let currentFrameKey = null;
   let draft = [];
@@ -83,6 +94,18 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     }
   }
 
+  function saveLearningLibrary() {
+    learningLibrary.updatedAt = new Date().toISOString();
+    try {
+      localStorage.setItem(LEARNING_LIBRARY_KEY, JSON.stringify(learningLibrary));
+      learningStorageError = false;
+      return true;
+    } catch (_) {
+      learningStorageError = true;
+      return false;
+    }
+  }
+
   function toast(message) {
     els.toast.textContent = message;
     els.toast.classList.add('show');
@@ -108,6 +131,80 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   function getFrame(key = currentKey()) { return state.frames.find(frame => frame.frameNumber === key); }
   function speciesById(id) { return state.species.find(item => item.id === id) || state.species[0]; }
   function hasMedia() { return demoMode || Boolean(videoUrl); }
+
+  function matchingSpecies(taxonomy) {
+    const aliases = new Set(taxonomyAliases(taxonomy));
+    return state.species.find(species => taxonomyAliases(species).some(alias => aliases.has(alias)));
+  }
+
+  function mergeLearningTaxonomyIntoProject() {
+    let changed = false;
+    learningLibrary.examples.forEach(example => {
+      if (!example.species || matchingSpecies(example.species)) return;
+      const baseCode = String(example.species.code || example.species.common || 'SPECIES').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'SPECIES';
+      let code = baseCode, suffix = 2;
+      while (state.species.some(item => item.code === code)) { code = `${baseCode.slice(0, 9)}${suffix}`; suffix += 1; }
+      state.species.push({
+        id: uid('sp_shared'),
+        common: example.species.common || example.species.scientific || code,
+        scientific: example.species.scientific || '',
+        code,
+        color: colors[state.species.length % colors.length]
+      });
+      changed = true;
+    });
+    return changed;
+  }
+
+  function removeLearningExample(exampleId) {
+    if (!exampleId) return false;
+    const before = learningLibrary.examples.length;
+    learningLibrary.examples = learningLibrary.examples.filter(example => example.id !== exampleId);
+    return learningLibrary.examples.length !== before;
+  }
+
+  function upsertLearningExample(annotation) {
+    const usable = annotation.verified !== false && Array.isArray(annotation.featureVector) && annotation.featureVector.length;
+    if (!usable) {
+      const removed = removeLearningExample(annotation.learningExampleId);
+      if (annotation.learningExampleId) delete annotation.learningExampleId;
+      return removed;
+    }
+    const species = state.species.find(item => item.id === annotation.speciesId);
+    if (!species) return false;
+    if (!annotation.learningExampleId) annotation.learningExampleId = `learn:${state.project.createdAt||state.project.deploymentId||state.project.name}:${state.video.name}:${annotation.id}`;
+    const example = {
+      id: annotation.learningExampleId,
+      sourceAnnotationId: annotation.id,
+      featureVersion: state.model.featureVersion,
+      species: { common: species.common, scientific: species.scientific, code: species.code },
+      features: annotation.featureVector,
+      labelSource: annotation.labelSource || 'manual',
+      source: { project: state.project.name, deploymentId: state.project.deploymentId, video: state.video.name },
+      updatedAt: new Date().toISOString()
+    };
+    const index = learningLibrary.examples.findIndex(item => item.id === example.id);
+    if (index >= 0) learningLibrary.examples[index] = example; else learningLibrary.examples.push(example);
+    return true;
+  }
+
+  function syncLearningAnnotations(annotations, previousAnnotations = []) {
+    let changed = false;
+    annotations.forEach(annotation => { changed = upsertLearningExample(annotation) || changed; });
+    const liveIds = new Set(annotations.map(annotation => annotation.learningExampleId).filter(Boolean));
+    previousAnnotations.forEach(annotation => {
+      if (annotation.learningExampleId && !liveIds.has(annotation.learningExampleId)) changed = removeLearningExample(annotation.learningExampleId) || changed;
+    });
+    if (changed) saveLearningLibrary();
+    return changed;
+  }
+
+  function syncProjectToLearningLibrary() {
+    let changed = false;
+    state.frames.forEach(frame => frame.annotations.forEach(annotation => { changed = upsertLearningExample(annotation) || changed; }));
+    if (changed) saveLearningLibrary();
+    return changed;
+  }
 
   function selectView(name) {
     $$('.nav-item').forEach(btn => btn.classList.toggle('is-active', btn.dataset.view === name));
@@ -161,12 +258,14 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   function syncFrame({ createEmpty = false } = {}) {
     const key = currentKey();
     let frame = getFrame(key);
+    const previousAnnotations = frame ? structuredClone(frame.annotations) : [];
     if (!frame && (draft.length || createEmpty || els.frameNote.value.trim())) {
       frame = { id: uid('frame'), time: currentTime, frameNumber: key, annotations: [], note: '', reviewed: false, savedAt: new Date().toISOString() };
       state.frames.push(frame);
     }
     if (frame) {
       frame.time = currentTime;
+      syncLearningAnnotations(draft, previousAnnotations);
       frame.annotations = structuredClone(draft);
       frame.note = els.frameNote.value.trim();
       frame.savedAt = new Date().toISOString();
@@ -385,13 +484,14 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   }
 
   function modelTrainingExamples(excludeId = null) {
-    return state.frames.flatMap(frame=>frame.annotations).filter(ann=>ann.id!==excludeId&&ann.verified!==false&&Array.isArray(ann.featureVector)&&ann.featureVector.length).map(ann=>({speciesId:ann.speciesId,features:ann.featureVector}));
+    return mapLearningExamples(learningLibrary.examples,state.species,{featureVersion:state.model.featureVersion,excludeAnnotationId:excludeId});
   }
 
   function getModelStats() {
     const examples=modelTrainingExamples(), classes=new Set(examples.map(example=>example.speciesId)).size;
     const decisions=state.model.accepted+state.model.corrected;
-    return {examples:examples.length,classes,ready:examples.length>=state.model.minSamples&&classes>=state.model.minClasses,acceptance:decisions?Math.round(state.model.accepted/decisions*100):null};
+    const videos=new Set(learningLibrary.examples.filter(example=>example.featureVersion===state.model.featureVersion).map(example=>`${example.source?.deploymentId||example.source?.project||''}:${example.source?.video||''}`)).size;
+    return {examples:examples.length,classes,videos,ready:examples.length>=state.model.minSamples&&classes>=state.model.minClasses,acceptance:decisions?Math.round(state.model.accepted/decisions*100):null};
   }
 
   function predictBoxSpecies(features) {
@@ -515,7 +615,11 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     if (!hasMedia()) return toast('Open a video first');
     const previous = [...state.frames].filter(frame => frame.frameNumber < currentKey() && frame.annotations.length).sort((a,b) => b.frameNumber-a.frameNumber)[0];
     if (!previous) return toast('No preceding annotations to clone');
-    draft = structuredClone(previous.annotations).map(ann => ({ ...ann, id: uid('box'), featureVector: null, labelSource: 'manual', verified: true }));
+    draft = structuredClone(previous.annotations).map(ann => {
+      const copy={...ann,id:uid('box'),labelSource:'manual',verified:true};
+      delete copy.learningExampleId;delete copy.modelSuggestedSpeciesId;delete copy.modelConfidence;delete copy.modelVersion;delete copy.trackingSource;delete copy.trackingRunId;
+      copy.featureVector=extractVisualFeature(copy);return copy;
+    });
     selectedId = null; syncFrame(); toast(`Cloned ${draft.length} boxes from ${formatTime(previous.time)}`);
   }
 
@@ -572,13 +676,13 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     if($('#modelClasses'))$('#modelClasses').textContent=stats.classes;
     if($('#modelAccuracy'))$('#modelAccuracy').textContent=stats.acceptance===null?'—':`${stats.acceptance}%`;
     if($('#datasetModelToggle'))$('#datasetModelToggle').textContent=enabled?'Disable Class Assist':'Enable Class Assist';
-    if($('#modelReadiness'))$('#modelReadiness').textContent=stats.ready?`Ready to suggest labels from ${stats.examples} verified examples across ${stats.classes} species.`:`Learning: ${stats.examples}/${state.model.minSamples} examples and ${stats.classes}/${state.model.minClasses} species available.`;
+    if($('#modelReadiness'))$('#modelReadiness').textContent=learningStorageError?'Shared learning is active for this session, but the browser could not persist it. Free site storage before closing.':stats.ready?`Ready from ${stats.examples} verified examples across ${stats.videos} ${stats.videos===1?'video':'videos'} and ${stats.classes} species.`:`Shared learning: ${stats.examples}/${state.model.minSamples} examples and ${stats.classes}/${state.model.minClasses} species across ${stats.videos} ${stats.videos===1?'video':'videos'}.`;
   }
 
   function toggleModelAssist() {
     state.model.enabled=!state.model.enabled;saveProject();renderModelUI();
     const stats=getModelStats();
-    toast(state.model.enabled?(stats.ready?'Class Assist enabled and ready':'Class Assist enabled — learning from verified boxes'):'Class Assist disabled');
+    toast(state.model.enabled?(stats.ready?'Class Assist enabled with shared learning':'Class Assist enabled — learning from verified boxes across videos'):'Class Assist disabled');
   }
 
   async function bootstrapModelFromExistingLabels() {
@@ -594,7 +698,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
         item.annotations.forEach(annotation=>{annotation.featureVector=extractVisualFeature(annotation);completed+=1;});
         updateExportProgress(completed/total*100,'Learning from verified boxes',`${completed} of ${total} examples`);
       }
-      saveProject();updateExportProgress(100,'Class Assist updated',`${getModelStats().examples} visual examples available`);setTimeout(()=>dialog.close(),600);toast('Class Assist learned from existing verified boxes');
+      syncProjectToLearningLibrary();saveProject();updateExportProgress(100,'Class Assist updated',`${getModelStats().examples} shared visual examples available`);setTimeout(()=>dialog.close(),600);toast('Verified boxes added to the shared learning library');
     }catch(error){dialog.close();toast(error.message||'Could not learn from existing boxes');}
     finally{try{await seekForExtraction(originalTime);}catch(_){/* retain trained features */}currentTime=originalTime;els.timeline.value=originalTime;loadFrameAtTime(true);renderModelUI();}
   }
@@ -820,7 +924,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   $('#detailsForm').addEventListener('submit',event=>{ if(event.submitter?.value==='cancel')return;event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));state.project={...state.project,name:data.projectName,...data};delete state.project.projectName;saveProject();renderProjectInfo();$('#detailsDialog').close();toast('Deployment details saved'); });
   $('#exportProjectBtn').addEventListener('click',exportProject);
   $('#importProjectBtn').addEventListener('click',()=>$('#projectFileInput').click());
-  $('#projectFileInput').addEventListener('change',async event=>{ try{const incoming=JSON.parse(await event.target.files[0].text());if(!incoming.schemaVersion||!Array.isArray(incoming.frames)||!Array.isArray(incoming.species))throw new Error();state=upgradeProject(incoming);demoMode=false;videoUrl=null;currentVideoFile=null;currentTime=0;currentFrameKey=null;els.stage.classList.remove('ready','has-video','demo');renderAll();saveProject();toast('Project imported — reopen its video to continue');}catch(_){toast('That file is not a valid FinFrame project');}event.target.value=''; });
+  $('#projectFileInput').addEventListener('change',async event=>{ try{const incoming=JSON.parse(await event.target.files[0].text());if(!incoming.schemaVersion||!Array.isArray(incoming.frames)||!Array.isArray(incoming.species))throw new Error();state=upgradeProject(incoming);mergeLearningTaxonomyIntoProject();syncProjectToLearningLibrary();demoMode=false;videoUrl=null;currentVideoFile=null;currentTime=0;currentFrameKey=null;els.stage.classList.remove('ready','has-video','demo');renderAll();saveProject();toast('Project imported — verified examples joined the shared learning library');}catch(_){toast('That file is not a valid FinFrame project');}event.target.value=''; });
   $$('.table-tab').forEach(btn=>btn.addEventListener('click',()=>{reviewFilter=btn.dataset.reviewFilter;$$('.table-tab').forEach(b=>b.classList.toggle('is-active',b===btn));renderReview();}));
   $('#reviewSearch').addEventListener('input',renderReview); $('#reviewAllBtn').addEventListener('click',()=>{state.frames.forEach(f=>f.reviewed=true);saveProject();renderReview();toast('All annotated frames marked reviewed');});
   $$('[data-export]').forEach(btn=>btn.addEventListener('click',()=>({coco:exportCoco,yolo:exportYolo,csv:exportCsv,framecsv:exportFrameCsv,project:exportProject}[btn.dataset.export]())));
@@ -830,6 +934,9 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   if (state.video.name) {
     $('#projectSubtitle').textContent = `${state.video.name} · reopen video to resume`;
   }
+  const sharedTaxonomyAdded=mergeLearningTaxonomyIntoProject();
+  const sharedExamplesAdded=syncProjectToLearningLibrary();
+  if(sharedTaxonomyAdded||sharedExamplesAdded)saveProject();
   els.timeline.max = state.video.duration || 100;
   renderAll(); resizeCanvas();
 })();

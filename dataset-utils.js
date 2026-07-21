@@ -26,6 +26,34 @@ export function yoloLineFromNormalized(classId, box) {
   return `${classId} ${(box.x + box.w / 2).toFixed(6)} ${(box.y + box.h / 2).toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`;
 }
 
+function normaliseTaxonomyValue(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+export function taxonomyAliases(species = {}) {
+  return [
+    ['scientific', species.scientific],
+    ['code', species.code],
+    ['common', species.common]
+  ].map(([kind, value]) => {
+    const normalised = normaliseTaxonomyValue(value);
+    return normalised ? `${kind}:${normalised}` : null;
+  }).filter(Boolean);
+}
+
+export function mapLearningExamples(examples, species, options = {}) {
+  const featureVersion = options.featureVersion ?? 1, excludeAnnotationId = options.excludeAnnotationId ?? null;
+  const speciesByAlias = new Map();
+  species.forEach(item => taxonomyAliases(item).forEach(alias => {
+    if (!speciesByAlias.has(alias)) speciesByAlias.set(alias, item.id);
+  }));
+  return examples.flatMap(example => {
+    if (example.featureVersion !== featureVersion || example.sourceAnnotationId === excludeAnnotationId || !Array.isArray(example.features) || !example.features.length) return [];
+    const speciesId = taxonomyAliases(example.species).map(alias => speciesByAlias.get(alias)).find(Boolean);
+    return speciesId ? [{ speciesId, features: example.features }] : [];
+  });
+}
+
 export function predictKnn(samples, features, options = {}) {
   const minSamples = options.minSamples ?? 4, minClasses = options.minClasses ?? 2, k = options.k ?? 7;
   if (!Array.isArray(features) || !features.length || samples.length < minSamples) return null;

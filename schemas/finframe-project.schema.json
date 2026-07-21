@@ -120,6 +120,7 @@
         "modelSuggestedSpeciesId": { "type": "string" },
         "modelConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "modelVersion": { "type": "integer", "minimum": 1 },
+        "learningExampleId": { "type": "string", "minLength": 1 },
         "trackingSource": { "enum": ["bytetrack", "botsort"] },
         "trackingRunId": { "type": "string" }
       },

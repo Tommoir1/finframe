@@ -15,7 +15,7 @@ FinFrame is a local-first browser prototype for annotating fish in underwater vi
 - Full project JSON import/export
 - Optional one-click extraction of the exact labelled video frames at native resolution
 - COCO and YOLO dataset ZIPs containing labels, frame manifests, taxonomy, project metadata and per-frame counts, with JPEG images included only when requested
-- On-device Class Assist that learns from verified crops and suggests species for newly drawn boxes
+- Shared on-device Class Assist that learns from verified crops across annotated videos and suggests species for newly drawn boxes
 - Optional local detector tracking with ByteTrack or BoT-SORT; imported tracks remain review proposals
 - Ecology observation CSV and dedicated per-frame count/MaxN CSV exports
 - Responsive interface and a built-in sample survey
@@ -38,15 +38,17 @@ The original source video is not required for label-only COCO or YOLO exports. E
 
 ## Class Assist
 
-Class Assist is an optional local learning loop for the stage after a student draws a bounding box. It extracts a compact colour, texture and shape feature vector from verified fish crops and uses distance-weighted nearest neighbours to suggest the species of new boxes.
+Class Assist is an optional local learning loop for the stage after a student draws a bounding box. It extracts a compact colour, texture and shape feature vector from verified fish crops and uses distance-weighted nearest neighbours to suggest the species of new boxes. Its learning library is separate from the currently open project, so verified examples continue to contribute after another video or project is opened.
 
-- Learning begins from manually labelled or corrected boxes while the source video is open.
-- Existing verified annotations can be added with **Learn from existing boxes**.
+- Learning begins from manually labelled, accepted or corrected boxes while the source video is open.
+- Existing verified annotations can be added with **Learn from existing boxes**; importing a project also merges any previously extracted features into the shared library.
+- Examples are deduplicated by annotation and matched across projects using scientific name, species code and common name rather than project-specific IDs.
+- Species learned in earlier projects are restored into the current taxonomy automatically.
 - Suggestions remain pending until a student accepts the guess or chooses a different species.
 - Pending guesses are excluded from MaxN, observation CSVs, COCO labels and YOLO labels.
-- Accepted and corrected predictions become new verified training examples, allowing the assistant to improve during the annotation session.
+- Accepted and corrected predictions become new verified training examples, allowing the assistant to improve across annotation sessions and videos.
 
-This lightweight classifier is intended for immediate, private, in-browser assistance. It is not a replacement for training a full detector such as YOLO on the exported dataset; the export formats remain the path to a production model that can detect fish without a student first drawing a box.
+The shared library remains in browser storage and contains compact feature vectors and source metadata, not video frames. It is shared by projects opened in the same browser profile; clearing site data removes it, and it is not automatically synchronised between computers. This lightweight classifier is intended for immediate, private, in-browser assistance. It is not a replacement for training a full detector such as YOLO on aggregated exports; the export formats remain the path to a production model that can detect fish without a student first drawing a box.
 
 ## Automatic tracking
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ZipStore, cocoBoxFromNormalized, crc32, csvText, predictKnn, yoloLineFromNormalized } from '../dataset-utils.js';
+import { ZipStore, cocoBoxFromNormalized, crc32, csvText, mapLearningExamples, predictKnn, taxonomyAliases, yoloLineFromNormalized } from '../dataset-utils.js';
 
 test('COCO geometry converts normalised top-left boxes to pixels', () => {
   assert.deepEqual(cocoBoxFromNormalized({ x: 0.125, y: 0.25, w: 0.5, h: 0.25 }, 1920, 1080), [240, 270, 960, 270]);
@@ -47,4 +47,20 @@ test('Class Assist predicts the nearest verified species', () => {
 
 test('Class Assist waits for enough examples and classes', () => {
   assert.equal(predictKnn([{ speciesId: 'snapper', features: [1, 0] }], [1, 0]), null);
+});
+
+test('shared learning maps examples across project-specific species IDs', () => {
+  const projectSpecies = [{ id: 'new-project-snapper', common: 'Australasian snapper', scientific: 'Chrysophrys auratus', code: 'CHRAUR' }];
+  const examples = [{ sourceAnnotationId: 'old-box', featureVersion: 1, species: { common: 'Snapper', scientific: 'Chrysophrys auratus', code: 'SNAP' }, features: [0.8, 0.2] }];
+  assert.deepEqual(mapLearningExamples(examples, projectSpecies), [{ speciesId: 'new-project-snapper', features: [0.8, 0.2] }]);
+});
+
+test('shared learning ignores incompatible feature versions and excluded annotations', () => {
+  const species = [{ id: 'snapper', common: 'Snapper', scientific: '', code: 'SNAP' }];
+  const examples = [
+    { sourceAnnotationId: 'one', featureVersion: 1, species: { common: 'Snapper', scientific: '', code: 'SNAP' }, features: [1, 0] },
+    { sourceAnnotationId: 'two', featureVersion: 2, species: { common: 'Snapper', scientific: '', code: 'SNAP' }, features: [0, 1] }
+  ];
+  assert.deepEqual(mapLearningExamples(examples, species, { featureVersion: 1, excludeAnnotationId: 'one' }), []);
+  assert.deepEqual(taxonomyAliases(species[0]), ['code:snap', 'common:snapper']);
 });
