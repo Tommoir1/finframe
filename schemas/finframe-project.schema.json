@@ -82,6 +82,17 @@
         "featureVersion": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
+    },
+    "tracking": {
+      "type": "object",
+      "properties": {
+        "runs": { "type": "integer", "minimum": 0 },
+        "proposals": { "type": "integer", "minimum": 0 },
+        "accepted": { "type": "integer", "minimum": 0 },
+        "corrected": { "type": "integer", "minimum": 0 },
+        "lastTracker": { "type": "string" }
+      },
+      "additionalProperties": false
     }
   },
   "$defs": {
@@ -101,14 +112,16 @@
         "activity": { "type": "string" },
         "uncertain": { "type": "boolean" },
         "verified": { "type": "boolean" },
-        "labelSource": { "enum": ["manual", "model", "model_verified", "corrected"] },
+        "labelSource": { "enum": ["manual", "model", "model_verified", "corrected", "tracker", "tracker_verified", "tracker_corrected"] },
         "featureVector": {
           "type": ["array", "null"],
           "items": { "type": "number" }
         },
         "modelSuggestedSpeciesId": { "type": "string" },
         "modelConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
-        "modelVersion": { "type": "integer", "minimum": 1 }
+        "modelVersion": { "type": "integer", "minimum": 1 },
+        "trackingSource": { "enum": ["bytetrack", "botsort"] },
+        "trackingRunId": { "type": "string" }
       },
       "additionalProperties": false
     }

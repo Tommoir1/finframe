@@ -19,3 +19,10 @@ Thumbs.db
 *.webm
 datasets/
 exports/
+
+# Local detector weights
+*.pt
+*.onnx
+tracking_service/.venv/
+__pycache__/
+*.py[cod]

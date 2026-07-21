@@ -4,6 +4,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   'use strict';
 
   const STORAGE_KEY = 'finframe-project-v1';
+  const TRACKER_SERVICE_URL = 'http://127.0.0.1:8765';
   const colors = ['#ff8465', '#41bda8', '#efb24e', '#5d9bd3', '#c47ccc', '#77ad5c', '#e0648d'];
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -24,7 +25,8 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
       species: structuredClone(starterSpecies),
       frames: [],
       activeSpeciesId: starterSpecies[0].id,
-      model: { enabled: false, minSamples: 4, minClasses: 2, predictions: 0, accepted: 0, corrected: 0, featureVersion: 1 }
+      model: { enabled: false, minSamples: 4, minClasses: 2, predictions: 0, accepted: 0, corrected: 0, featureVersion: 1 },
+      tracking: { runs: 0, proposals: 0, accepted: 0, corrected: 0, lastTracker: '' }
     };
   }
 
@@ -38,6 +40,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
 
   function upgradeProject(project) {
     project.model = { enabled: false, minSamples: 4, minClasses: 2, predictions: 0, accepted: 0, corrected: 0, featureVersion: 1, ...(project.model || {}) };
+    project.tracking = { runs: 0, proposals: 0, accepted: 0, corrected: 0, lastTracker: '', ...(project.tracking || {}) };
     project.frames.forEach(frame => frame.annotations.forEach(annotation => {
       if (annotation.verified === undefined) annotation.verified = true;
       if (!annotation.labelSource) annotation.labelSource = 'manual';
@@ -53,6 +56,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   let activeTool = 'draw';
   let pointerAction = null;
   let videoUrl = null;
+  let currentVideoFile = null;
   let demoMode = false;
   let demoPlaying = false;
   let demoTimer = null;
@@ -186,6 +190,8 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     els.frameState.textContent = draft.length ? `${draft.length} ${draft.length === 1 ? 'box' : 'boxes'} saved${pending ? ` · ${pending} AI ${pending === 1 ? 'guess' : 'guesses'} pending` : ''}` : 'Frame not annotated';
     $('.live-dot').classList.toggle('active', draft.length > 0);
     $('#markReviewedBtn').textContent = frame?.reviewed ? '✓ Reviewed' : '✓ Mark reviewed';
+    $('#acceptFrameProposalsBtn').hidden=!pending;
+    $('#acceptFrameProposalsBtn').textContent=`Accept ${pending} ${pending===1?'proposal':'proposals'}`;
     renderAnnotations();
     renderFrameCounts();
     renderHud();
@@ -200,8 +206,9 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     }
     els.annotationList.innerHTML = draft.map((ann, index) => {
       const sp = speciesById(ann.speciesId);
-      const suggestion = ann.verified === false ? `<div class="ai-suggestion"><span>✦ Local model suggests <strong>${escapeHtml(sp.common)}</strong> · ${Math.round((ann.modelConfidence || 0) * 100)}%</span><button data-accept-id="${ann.id}">Accept guess</button></div>` : '';
-      const verified = ann.verified !== false && ann.labelSource !== 'manual' ? `<div class="verified-label">✓ Verified ${ann.labelSource === 'corrected' ? 'after correction' : 'model-assisted label'}</div>` : '';
+      const proposalSource=ann.trackingSource?`${ann.trackingSource === 'botsort'?'BoT-SORT':'ByteTrack'} + detector`:'Local model';
+      const suggestion = ann.verified === false ? `<div class="ai-suggestion"><span>✦ ${proposalSource} suggests <strong>${escapeHtml(sp.common)}</strong> · ${Math.round((ann.modelConfidence || 0) * 100)}%</span><button data-accept-id="${ann.id}">Accept guess</button></div>` : '';
+      const verified = ann.verified !== false && ann.labelSource !== 'manual' ? `<div class="verified-label">✓ Verified ${ann.labelSource?.includes('corrected') ? 'after correction' : ann.trackingSource ? 'tracked proposal' : 'model-assisted label'}</div>` : '';
       return `<div class="annotation-card ${selectedId === ann.id ? 'is-selected' : ''}" data-ann-id="${ann.id}">
         <div class="annotation-card-head"><span class="annotation-dot" style="background:${sp.color}"></span><strong>${escapeHtml(sp.common)}</strong><span class="track-chip">${escapeHtml(ann.trackId)}</span><button class="delete-box" data-delete-id="${ann.id}" aria-label="Delete box">×</button></div>
         <div class="annotation-fields">
@@ -232,16 +239,22 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     $$('[data-delete-id]', els.annotationList).forEach(btn => btn.addEventListener('click', () => deleteAnnotation(btn.dataset.deleteId)));
     $$('[data-accept-id]', els.annotationList).forEach(btn => btn.addEventListener('click', () => {
       const ann=draft.find(item=>item.id===btn.dataset.acceptId); if(!ann)return;
-      verifyModelLabel(ann,ann.speciesId);syncFrame();toast('Model suggestion accepted');
+      verifyModelLabel(ann,ann.speciesId);syncFrame();toast('Proposal accepted');
     }));
   }
 
   function verifyModelLabel(annotation, speciesId) {
     const matched = speciesId === annotation.modelSuggestedSpeciesId;
     if(annotation.speciesId!==speciesId)annotation.trackId=nextTrackId(speciesId);
-    annotation.speciesId = speciesId; annotation.verified = true;
-    annotation.labelSource = matched ? 'model_verified' : 'corrected';
-    if (matched) state.model.accepted += 1; else state.model.corrected += 1;
+    annotation.speciesId = speciesId; annotation.verified = true; annotation.uncertain = false;
+    if(annotation.trackingSource){
+      annotation.labelSource=matched?'tracker_verified':'tracker_corrected';
+      if(matched)state.tracking.accepted+=1;else state.tracking.corrected+=1;
+    }else{
+      annotation.labelSource = matched ? 'model_verified' : 'corrected';
+      if (matched) state.model.accepted += 1; else state.model.corrected += 1;
+    }
+    if(!annotation.featureVector)annotation.featureVector=extractVisualFeature(annotation);
   }
 
   function renderHud() {
@@ -467,8 +480,8 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
       $('#videoFileInput').value = '';
       return;
     }
-    if (changingSource) { state.frames = []; state.model={...state.model,predictions:0,accepted:0,corrected:0}; }
-    pauseMedia(); demoMode = false; els.stage.classList.remove('demo');
+    if (changingSource) { state.frames = []; state.model={...state.model,predictions:0,accepted:0,corrected:0}; state.tracking={runs:0,proposals:0,accepted:0,corrected:0,lastTracker:''}; }
+    pauseMedia(); demoMode = false; currentVideoFile=file; els.stage.classList.remove('demo');
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     videoUrl = URL.createObjectURL(file); els.video.src = videoUrl;
     state.video.name = file.name;
@@ -477,7 +490,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   }
 
   function loadDemo() {
-    pauseMedia(); demoMode = true; videoUrl = null; els.video.removeAttribute('src'); els.video.load();
+    pauseMedia(); demoMode = true; videoUrl = null; currentVideoFile=null; els.video.removeAttribute('src'); els.video.load();
     state.project.name = 'Temperate Reef Survey — Sample';
     state.project.deploymentId = 'BRUV-DEMO-01'; state.project.site = 'Emily Bay'; state.project.observer = 'Demo observer';
     state.video = { name: 'emily_bay_bruv_01.mp4', duration: 90, width: 1280, height: 720, fps: 25 };
@@ -586,6 +599,76 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
     finally{try{await seekForExtraction(originalTime);}catch(_){/* retain trained features */}currentTime=originalTime;els.timeline.value=originalTime;loadFrameAtTime(true);renderModelUI();}
   }
 
+  async function checkTrackerService() {
+    const dot=$('#trackerStatusDot'),status=$('#trackerServiceStatus'),detail=$('#trackerServiceDetail'),button=$('#startTrackingBtn');
+    dot.className='tracker-status-dot';status.textContent='Checking local tracker…';detail.textContent=TRACKER_SERVICE_URL;button.disabled=true;
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),3000);
+    try{
+      const response=await fetch(`${TRACKER_SERVICE_URL}/health`,{signal:controller.signal});
+      if(!response.ok)throw new Error('Service did not respond');
+      const health=await response.json();
+      if(health.model_ready){dot.classList.add('ready');status.textContent='Tracker ready';detail.textContent=`Detector: ${health.model_path}`;button.disabled=false;}
+      else{dot.classList.add('error');status.textContent='Service running; detector not configured';detail.textContent='Set FINFRAME_MODEL_PATH and restart the service';}
+    }catch(_){dot.classList.add('error');status.textContent='Local tracker is not running';detail.textContent='See tracking_service/README.md';}
+    finally{clearTimeout(timeout);}
+  }
+
+  function resolveTrackerSpecies(className,classId) {
+    const normalise=value=>String(value||'').toLowerCase().replace(/[^a-z0-9]+/g,'');
+    const target=normalise(className);
+    let species=state.species.find(item=>[item.common,item.scientific,item.code].some(value=>normalise(value)===target));
+    if(species)return species;
+    const baseCode=String(className||`class_${classId}`).toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,9)||`CLASS${classId}`;
+    let code=baseCode,suffix=1;while(state.species.some(item=>item.code===code)){code=`${baseCode.slice(0,7)}${suffix}`;suffix+=1;}
+    species={id:`sp_tracker_${classId}_${safeFileName(className)}`,common:className||`Detector class ${classId}`,scientific:'',code,color:colors[state.species.length%colors.length]};
+    state.species.push(species);return species;
+  }
+
+  function overlapRatio(first,second) {
+    const left=Math.max(first.x,second.x),top=Math.max(first.y,second.y),right=Math.min(first.x+first.w,second.x+second.w),bottom=Math.min(first.y+first.h,second.y+second.h);
+    const intersection=Math.max(0,right-left)*Math.max(0,bottom-top),union=first.w*first.h+second.w*second.h-intersection;
+    return union>0?intersection/union:0;
+  }
+
+  function importTrackerProposals(result) {
+    let removed=0,added=0;
+    state.frames.forEach(frame=>{const before=frame.annotations.length;frame.annotations=frame.annotations.filter(ann=>!(ann.trackingSource===result.tracker&&ann.verified===false));removed+=before-frame.annotations.length;});
+    if(Number(result.video?.fps)>0){state.video.fps=Number(result.video.fps);els.fpsInput.value=state.video.fps;}
+    result.frames.forEach(trackedFrame=>{
+      if(!trackedFrame.detections?.length)return;
+      let frame=state.frames.find(item=>item.frameNumber===trackedFrame.frame_number);
+      if(!frame){frame={id:uid('frame'),time:Number(trackedFrame.time_seconds)||trackedFrame.frame_number/state.video.fps,frameNumber:trackedFrame.frame_number,annotations:[],note:'',reviewed:false,savedAt:new Date().toISOString()};state.frames.push(frame);}
+      trackedFrame.detections.forEach(detection=>{
+        const species=resolveTrackerSpecies(detection.class_name,detection.class_id),box=detection.bbox;
+        const proposal={id:uid('box'),speciesId:species.id,trackId:`${result.tracker==='botsort'?'BOT':'BT'}-${String(detection.track_id).padStart(5,'0')}`,x:Number(box.x),y:Number(box.y),w:Number(box.w),h:Number(box.h),stage:'Unknown',activity:'Passing',uncertain:true,featureVector:null,verified:false,labelSource:'tracker',trackingSource:result.tracker,trackingRunId:result.run_id,modelSuggestedSpeciesId:species.id,modelConfidence:Number(detection.confidence)};
+        const duplicatesVerified=frame.annotations.some(annotation=>annotation.verified!==false&&annotation.speciesId===proposal.speciesId&&(annotation.trackId===proposal.trackId||overlapRatio(annotation,proposal)>=0.7));
+        if(!duplicatesVerified){frame.annotations.push(proposal);added+=1;}
+      });
+    });
+    state.frames=state.frames.filter(frame=>frame.annotations.length||frame.note).sort((a,b)=>a.frameNumber-b.frameNumber);
+    state.tracking.runs+=1;state.tracking.proposals+=added;state.tracking.lastTracker=result.tracker;
+    currentFrameKey=null;saveProject();loadFrameAtTime(true);renderAll();
+    toast(`${added} ${result.tracker==='botsort'?'BoT-SORT':'ByteTrack'} proposals imported${removed?` · ${removed} old proposals replaced`:''}`);
+  }
+
+  async function runTracker(event) {
+    if(event.submitter?.value==='cancel')return;
+    event.preventDefault();
+    if(!currentVideoFile){$('#trackerDialog').close();toast('Open the original source video before auto-tracking');return;}
+    const form=event.currentTarget,data=new FormData();
+    data.append('video',currentVideoFile,currentVideoFile.name);data.append('tracker',form.elements.tracker.value);data.append('sample_every',form.elements.sampleEvery.value);data.append('confidence',form.elements.confidence.value);data.append('max_frames',form.elements.maxFrames.value);
+    $('#trackerDialog').close();const progress=$('#exportProgressDialog');progress.showModal();updateExportProgress(15,'Running local tracker',`${form.elements.tracker.value==='botsort'?'BoT-SORT':'ByteTrack'} is analysing ${currentVideoFile.name}…`);
+    try{
+      const response=await fetch(`${TRACKER_SERVICE_URL}/track`,{method:'POST',body:data});
+      if(!response.ok){let message=`Tracker failed (${response.status})`;try{const body=await response.json();message=body.detail||message;}catch(_){/* use status */}throw new Error(message);}
+      updateExportProgress(85,'Importing proposals','Converting tracks into reviewable FinFrame boxes…');const result=await response.json();importTrackerProposals(result);updateExportProgress(100,'Tracking complete',`${result.returned_frames} sampled frames processed`);setTimeout(()=>progress.close(),600);
+    }catch(error){progress.close();toast(error.message||'Local tracking failed');}
+  }
+
+  function acceptCurrentFrameProposals() {
+    const pending=draft.filter(annotation=>annotation.verified===false);pending.forEach(annotation=>verifyModelLabel(annotation,annotation.speciesId));syncFrame();toast(`${pending.length} proposals accepted on this frame`);
+  }
+
   function downloadBlob(name, blob) {
     const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
@@ -660,7 +743,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
         const categories=state.species.map((sp,i)=>({id:i+1,name:sp.common,supercategory:'fish',scientific_name:sp.scientific,code:sp.code}));
         const categoryMap=new Map(state.species.map((sp,i)=>[sp.id,i+1]));let annotationId=1;
         const images=imageRecords.map(({frame,fileName,imageId})=>({id:imageId,file_name:`images/${fileName}`,width:state.video.width,height:state.video.height,video_file:state.video.name,frame_number:frame.frameNumber,timestamp_seconds:Number(frame.time.toFixed(3)),deployment_id:state.project.deploymentId}));
-        const annotations=imageRecords.flatMap(({frame,imageId})=>frame.annotations.map(ann=>{const bbox=cocoBoxFromNormalized(ann,state.video.width,state.video.height);return{id:annotationId++,image_id:imageId,category_id:categoryMap.get(ann.speciesId),bbox,area:Number((bbox[2]*bbox[3]).toFixed(2)),iscrowd:0,track_id:ann.trackId,attributes:{stage:ann.stage,activity:ann.activity,uncertain:ann.uncertain,label_source:ann.labelSource||'manual',model_confidence:ann.modelConfidence??null}};}));
+        const annotations=imageRecords.flatMap(({frame,imageId})=>frame.annotations.map(ann=>{const bbox=cocoBoxFromNormalized(ann,state.video.width,state.video.height);return{id:annotationId++,image_id:imageId,category_id:categoryMap.get(ann.speciesId),bbox,area:Number((bbox[2]*bbox[3]).toFixed(2)),iscrowd:0,track_id:ann.trackId,attributes:{stage:ann.stage,activity:ann.activity,uncertain:ann.uncertain,label_source:ann.labelSource||'manual',model_confidence:ann.modelConfidence??null,tracking_source:ann.trackingSource??null}};}));
         zip.add('annotations/instances.json',JSON.stringify({info:{description:state.project.name,version:'1.0',created:new Date().toISOString(),source:'FinFrame',deployment_id:state.project.deploymentId},images,annotations,categories},null,2));
       } else {
         const classMap=new Map(state.species.map((sp,i)=>[sp.id,i]));
@@ -672,7 +755,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
       zip.add('metadata/project.finframe.json',JSON.stringify(state,null,2));
       zip.add('metadata/per_frame_counts.csv',csvText(perFrameCountLines()));
       zip.add('metadata/frame_manifest.csv',csvText(manifest));
-      zip.add('README.txt',`FinFrame ${format.toUpperCase()} export\n\nFrame images included: ${includeImages?'yes':'no'}\n\nBounding boxes use the uncropped source dimensions ${state.video.width}x${state.video.height}. When images are omitted, metadata/frame_manifest.csv identifies the exact source video timestamps and frame numbers for later extraction.\n\nOnly verified labels are exported. Pending Class Assist guesses remain in the project audit file but are excluded from model labels and MaxN.\n\nDo not randomly split neighbouring frames from this deployment across training and validation sets; split by deployment/video to prevent data leakage.\n`);
+      zip.add('README.txt',`FinFrame ${format.toUpperCase()} export\n\nFrame images included: ${includeImages?'yes':'no'}\n\nBounding boxes use the uncropped source dimensions ${state.video.width}x${state.video.height}. When images are omitted, metadata/frame_manifest.csv identifies the exact source video timestamps and frame numbers for later extraction.\n\nOnly verified labels are exported. Pending Class Assist and tracker proposals remain in the project audit file but are excluded from model labels and MaxN.\n\nDo not randomly split neighbouring frames from this deployment across training and validation sets; split by deployment/video to prevent data leakage.\n`);
       updateExportProgress(94,'Packaging dataset','Building ZIP archive…');
       const blob=new Blob([zip.build()],{type:'application/zip'});updateExportProgress(100,'Dataset ready',`${frames.length} labelled frames${includeImages?' with images':''} · ${(blob.size/1024/1024).toFixed(1)} MB`);
       downloadBlob(`${safeFileName(state.project.name)}_${format}_dataset.zip`,blob);
@@ -722,6 +805,9 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   els.canvas.addEventListener('pointerdown',onPointerDown); els.canvas.addEventListener('pointermove',onPointerMove); els.canvas.addEventListener('pointerup',onPointerUp); els.canvas.addEventListener('pointercancel',()=>{pointerAction=null;drawCanvas();});
   $('#cloneBtn').addEventListener('click',clonePreviousFrame);
   $('#modelAssistBtn').addEventListener('click',toggleModelAssist);
+  $('#runTrackerBtn').addEventListener('click',()=>{if(!currentVideoFile){toast('Open the source video before auto-tracking');return;}$('#trackerDialog').showModal();checkTrackerService();});
+  $('#trackerForm').addEventListener('submit',runTracker);
+  $('#acceptFrameProposalsBtn').addEventListener('click',acceptCurrentFrameProposals);
   $('#datasetModelToggle').addEventListener('click',toggleModelAssist);
   $('#bootstrapModelBtn').addEventListener('click',bootstrapModelFromExistingLabels);
   $('#clearFrameBtn').addEventListener('click',()=>{ if(!draft.length)return; if(confirm('Remove every box from this frame?')){draft=[];selectedId=null;syncFrame();} });
@@ -734,7 +820,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNorma
   $('#detailsForm').addEventListener('submit',event=>{ if(event.submitter?.value==='cancel')return;event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));state.project={...state.project,name:data.projectName,...data};delete state.project.projectName;saveProject();renderProjectInfo();$('#detailsDialog').close();toast('Deployment details saved'); });
   $('#exportProjectBtn').addEventListener('click',exportProject);
   $('#importProjectBtn').addEventListener('click',()=>$('#projectFileInput').click());
-  $('#projectFileInput').addEventListener('change',async event=>{ try{const incoming=JSON.parse(await event.target.files[0].text());if(!incoming.schemaVersion||!Array.isArray(incoming.frames)||!Array.isArray(incoming.species))throw new Error();state=upgradeProject(incoming);demoMode=false;videoUrl=null;currentTime=0;currentFrameKey=null;els.stage.classList.remove('ready','has-video','demo');renderAll();saveProject();toast('Project imported — reopen its video to continue');}catch(_){toast('That file is not a valid FinFrame project');}event.target.value=''; });
+  $('#projectFileInput').addEventListener('change',async event=>{ try{const incoming=JSON.parse(await event.target.files[0].text());if(!incoming.schemaVersion||!Array.isArray(incoming.frames)||!Array.isArray(incoming.species))throw new Error();state=upgradeProject(incoming);demoMode=false;videoUrl=null;currentVideoFile=null;currentTime=0;currentFrameKey=null;els.stage.classList.remove('ready','has-video','demo');renderAll();saveProject();toast('Project imported — reopen its video to continue');}catch(_){toast('That file is not a valid FinFrame project');}event.target.value=''; });
   $$('.table-tab').forEach(btn=>btn.addEventListener('click',()=>{reviewFilter=btn.dataset.reviewFilter;$$('.table-tab').forEach(b=>b.classList.toggle('is-active',b===btn));renderReview();}));
   $('#reviewSearch').addEventListener('input',renderReview); $('#reviewAllBtn').addEventListener('click',()=>{state.frames.forEach(f=>f.reviewed=true);saveProject();renderReview();toast('All annotated frames marked reviewed');});
   $$('[data-export]').forEach(btn=>btn.addEventListener('click',()=>({coco:exportCoco,yolo:exportYolo,csv:exportCsv,framecsv:exportFrameCsv,project:exportProject}[btn.dataset.export]())));

@@ -68,10 +68,15 @@ Annotations include `verified` and `labelSource` fields. `labelSource` is one of
 - `model`: pending Class Assist suggestion
 - `model_verified`: model suggestion accepted by the annotator
 - `corrected`: model suggestion changed by the annotator
+- `tracker`: pending detector/tracker proposal
+- `tracker_verified`: detector/tracker proposal accepted by the annotator
+- `tracker_corrected`: detector/tracker proposal assigned a different species by the annotator
 
 Only annotations where `verified` is not `false` contribute to MaxN or appear in COCO, YOLO and observation CSV exports. Pending predictions remain in `project.finframe.json` for audit and model-evaluation purposes.
 
 The optional `featureVector`, `modelSuggestedSpeciesId`, `modelConfidence` and `modelVersion` fields support the on-device continual-learning loop. The feature vector is not a substitute for the source crop and is not written into COCO or YOLO labels.
+
+Tracked proposals additionally contain `trackingSource` (`bytetrack` or `botsort`) and `trackingRunId`. Stable tracker IDs are exported as `track_id` after verification. COCO attributes retain the tracker source for audit.
 
 ## Per-frame abundance
 

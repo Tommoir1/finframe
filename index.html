@@ -83,6 +83,7 @@
           <div class="toolbar-divider"></div>
           <button class="tool-button" id="cloneBtn" title="Copy boxes from the preceding annotated frame">⧉ Clone previous</button>
           <button class="tool-button ai-assist-button" id="modelAssistBtn" title="Learn from verified labels and suggest species for new boxes"><span>✦</span> Class Assist <em id="modelAssistStatus">Off</em></button>
+          <button class="tool-button tracker-button" id="runTrackerBtn" title="Generate unverified tracked-box proposals with a local detector"><span>⌁</span> Auto-track</button>
           <button class="tool-button danger-quiet" id="clearFrameBtn" title="Remove boxes from this frame">Clear frame</button>
           <div class="toolbar-spacer"></div>
           <div class="frame-badge"><span class="live-dot"></span><span id="frameState">Frame not annotated</span></div>
@@ -162,6 +163,7 @@
             <textarea id="frameNote" rows="2" placeholder="Visibility, behaviour, uncertainty…"></textarea>
           </div>
           <div class="inspector-actions">
+            <button class="button button-secondary grow" id="acceptFrameProposalsBtn" hidden>Accept proposals</button>
             <button class="button button-secondary grow" id="markReviewedBtn">✓ Mark reviewed</button>
           </div>
         </div>
@@ -262,6 +264,24 @@
       <progress id="exportProgressBar" value="0" max="100"></progress>
       <strong id="exportProgressValue">0%</strong>
     </div>
+  </dialog>
+
+  <dialog class="modal wide" id="trackerDialog">
+    <form method="dialog" id="trackerForm">
+      <div class="modal-header"><div><span class="eyebrow">Optional local service</span><h2>Generate tracking proposals</h2></div><button class="modal-close" value="cancel" aria-label="Close">×</button></div>
+      <div class="tracker-status-card"><span class="tracker-status-dot" id="trackerStatusDot"></span><span><strong id="trackerServiceStatus">Checking local tracker…</strong><small id="trackerServiceDetail">http://127.0.0.1:8765</small></span></div>
+      <p class="tracker-explainer">The tracker combines your custom fish detector with a multi-object tracker. Generated boxes and identities remain unverified until a student reviews them.</p>
+      <div class="form-row">
+        <label>Tracking method<select name="tracker"><option value="bytetrack">ByteTrack — fast baseline</option><option value="botsort">BoT-SORT — camera-motion compensation</option></select></label>
+        <label>Sample every N frames<input name="sampleEvery" type="number" min="1" max="120" value="5"></label>
+      </div>
+      <div class="form-row">
+        <label>Detection confidence<input name="confidence" type="number" min="0.01" max="0.99" step="0.01" value="0.25"></label>
+        <label>Maximum frames<input name="maxFrames" type="number" min="0" step="1" value="0"><small>0 processes the full video</small></label>
+      </div>
+      <div class="tracker-note"><strong>Which should I choose?</strong> Use ByteTrack for a fast detector-driven baseline. Try BoT-SORT when camera motion disrupts association; appearance ReID requires additional configuration and validation. A SAM 2 provider is the better future option for following one manually boxed fish before a detector has been trained.</div>
+      <div class="modal-actions"><button class="button button-ghost" value="cancel">Cancel</button><button class="button button-primary" id="startTrackingBtn" value="default">Generate proposals</button></div>
+    </form>
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>

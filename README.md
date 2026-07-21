@@ -16,6 +16,7 @@ FinFrame is a local-first browser prototype for annotating fish in underwater vi
 - Optional one-click extraction of the exact labelled video frames at native resolution
 - COCO and YOLO dataset ZIPs containing labels, frame manifests, taxonomy, project metadata and per-frame counts, with JPEG images included only when requested
 - On-device Class Assist that learns from verified crops and suggests species for newly drawn boxes
+- Optional local detector tracking with ByteTrack or BoT-SORT; imported tracks remain review proposals
 - Ecology observation CSV and dedicated per-frame count/MaxN CSV exports
 - Responsive interface and a built-in sample survey
 
@@ -46,6 +47,14 @@ Class Assist is an optional local learning loop for the stage after a student dr
 - Accepted and corrected predictions become new verified training examples, allowing the assistant to improve during the annotation session.
 
 This lightweight classifier is intended for immediate, private, in-browser assistance. It is not a replacement for training a full detector such as YOLO on the exported dataset; the export formats remain the path to a production model that can detect fish without a student first drawing a box.
+
+## Automatic tracking
+
+FinFrame includes an optional local service in [tracking_service/](tracking_service/) that combines custom fish-detector weights with ByteTrack or BoT-SORT. The browser sends the open video only to `127.0.0.1`; the service removes its temporary copy after inference.
+
+All tracker output is imported as unverified proposals. Proposed boxes and track IDs do not contribute to MaxN or released datasets until accepted or corrected. Students can accept individual boxes or all proposals on the current frame.
+
+ByteTrack is the recommended fast baseline after a fish detector has been trained. It associates detection boxes but cannot propagate a lone manually drawn box by itself. For that early annotation workflow, a future SAM 2 provider is preferable because it accepts a box prompt and propagates the object through video. See [tracking_service/README.md](tracking_service/README.md) for setup and tracker-selection guidance.
 
 ## Machine-learning compatibility
 
