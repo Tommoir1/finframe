@@ -25,12 +25,13 @@ COCO export converts the values to `[x_pixels, y_pixels, width_pixels, height_pi
 
 ```text
 images/
-  <video>_frame_00000310.jpg
+  <video>_frame_00000310.jpg  # optional
 annotations/
   instances.json
 metadata/
   project.finframe.json
   per_frame_counts.csv
+  frame_manifest.csv
 README.txt
 ```
 
@@ -43,7 +44,7 @@ The annotation JSON uses standard COCO `images`, `annotations` and `categories` 
 
 ```text
 images/
-  <video>_frame_00000310.jpg
+  <video>_frame_00000310.jpg  # optional
 labels/
   <video>_frame_00000310.txt
 data.yaml
@@ -51,10 +52,26 @@ classes.txt
 metadata/
   project.finframe.json
   per_frame_counts.csv
+  frame_manifest.csv
 README.txt
 ```
 
 Image and label basenames match exactly. Class indices are zero-based and follow the order in `classes.txt` and `data.yaml`.
+
+Frame images are optional in both formats. `frame_manifest.csv` always identifies the source video, timestamp, frame number, dimensions and intended image filename so image extraction can happen later in a separate pipeline.
+
+## Model-assisted labels
+
+Annotations include `verified` and `labelSource` fields. `labelSource` is one of:
+
+- `manual`: assigned by the annotator without a model suggestion
+- `model`: pending Class Assist suggestion
+- `model_verified`: model suggestion accepted by the annotator
+- `corrected`: model suggestion changed by the annotator
+
+Only annotations where `verified` is not `false` contribute to MaxN or appear in COCO, YOLO and observation CSV exports. Pending predictions remain in `project.finframe.json` for audit and model-evaluation purposes.
+
+The optional `featureVector`, `modelSuggestedSpeciesId`, `modelConfidence` and `modelVersion` fields support the on-device continual-learning loop. The feature vector is not a substitute for the source crop and is not written into COCO or YOLO labels.
 
 ## Per-frame abundance
 

@@ -1,4 +1,4 @@
-import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from './dataset-utils.js';
+import { ZipStore, csvText, cocoBoxFromNormalized, predictKnn, yoloLineFromNormalized } from './dataset-utils.js';
 
 (() => {
   'use strict';
@@ -23,7 +23,8 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
       video: { name: '', duration: 0, width: 1920, height: 1080, fps: 25 },
       species: structuredClone(starterSpecies),
       frames: [],
-      activeSpeciesId: starterSpecies[0].id
+      activeSpeciesId: starterSpecies[0].id,
+      model: { enabled: false, minSamples: 4, minClasses: 2, predictions: 0, accepted: 0, corrected: 0, featureVersion: 1 }
     };
   }
 
@@ -35,7 +36,16 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
     return emptyProject();
   }
 
-  let state = restoreProject();
+  function upgradeProject(project) {
+    project.model = { enabled: false, minSamples: 4, minClasses: 2, predictions: 0, accepted: 0, corrected: 0, featureVersion: 1, ...(project.model || {}) };
+    project.frames.forEach(frame => frame.annotations.forEach(annotation => {
+      if (annotation.verified === undefined) annotation.verified = true;
+      if (!annotation.labelSource) annotation.labelSource = 'manual';
+    }));
+    return project;
+  }
+
+  let state = upgradeProject(restoreProject());
   let currentTime = 0;
   let currentFrameKey = null;
   let draft = [];
@@ -172,12 +182,14 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
     els.frameNumber.textContent = `Frame ${currentKey().toLocaleString()}`;
     els.frameFishCount.textContent = draft.length;
     const frame = getFrame();
-    els.frameState.textContent = draft.length ? `${draft.length} ${draft.length === 1 ? 'box' : 'boxes'} saved` : 'Frame not annotated';
+    const pending = draft.filter(ann => ann.verified === false).length;
+    els.frameState.textContent = draft.length ? `${draft.length} ${draft.length === 1 ? 'box' : 'boxes'} saved${pending ? ` · ${pending} AI ${pending === 1 ? 'guess' : 'guesses'} pending` : ''}` : 'Frame not annotated';
     $('.live-dot').classList.toggle('active', draft.length > 0);
     $('#markReviewedBtn').textContent = frame?.reviewed ? '✓ Reviewed' : '✓ Mark reviewed';
     renderAnnotations();
     renderFrameCounts();
     renderHud();
+    renderModelUI();
     drawCanvas();
   }
 
@@ -188,6 +200,8 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
     }
     els.annotationList.innerHTML = draft.map((ann, index) => {
       const sp = speciesById(ann.speciesId);
+      const suggestion = ann.verified === false ? `<div class="ai-suggestion"><span>✦ Local model suggests <strong>${escapeHtml(sp.common)}</strong> · ${Math.round((ann.modelConfidence || 0) * 100)}%</span><button data-accept-id="${ann.id}">Accept guess</button></div>` : '';
+      const verified = ann.verified !== false && ann.labelSource !== 'manual' ? `<div class="verified-label">✓ Verified ${ann.labelSource === 'corrected' ? 'after correction' : 'model-assisted label'}</div>` : '';
       return `<div class="annotation-card ${selectedId === ann.id ? 'is-selected' : ''}" data-ann-id="${ann.id}">
         <div class="annotation-card-head"><span class="annotation-dot" style="background:${sp.color}"></span><strong>${escapeHtml(sp.common)}</strong><span class="track-chip">${escapeHtml(ann.trackId)}</span><button class="delete-box" data-delete-id="${ann.id}" aria-label="Delete box">×</button></div>
         <div class="annotation-fields">
@@ -197,6 +211,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
           <label>Activity<select data-field="activity"><option ${ann.activity === 'Passing' ? 'selected' : ''}>Passing</option><option ${ann.activity === 'Feeding' ? 'selected' : ''}>Feeding</option><option ${ann.activity === 'Schooling' ? 'selected' : ''}>Schooling</option><option ${ann.activity === 'Resting' ? 'selected' : ''}>Resting</option></select></label>
         </div>
         <div class="flag-row"><span>Box ${index + 1} · ${Math.round(ann.w * state.video.width)} × ${Math.round(ann.h * state.video.height)} px</span><label class="switch-label"><input type="checkbox" data-field="uncertain" ${ann.uncertain ? 'checked' : ''}> Uncertain</label></div>
+        ${suggestion}${verified}
       </div>`;
     }).join('');
     $$('.annotation-card', els.annotationList).forEach(card => {
@@ -207,17 +222,31 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
       $$('[data-field]', card).forEach(control => control.addEventListener('change', () => {
         const ann = draft.find(item => item.id === card.dataset.annId);
         const field = control.dataset.field;
-        ann[field] = control.type === 'checkbox' ? control.checked : control.value;
+        if (field === 'speciesId' && ann.verified === false) verifyModelLabel(ann, control.value);
+        else if(field === 'speciesId') { if(ann.speciesId!==control.value)ann.trackId=nextTrackId(control.value); ann.speciesId=control.value; ann.labelSource='manual'; }
+        else ann[field] = control.type === 'checkbox' ? control.checked : control.value;
         if (field === 'speciesId') state.activeSpeciesId = control.value;
         syncFrame(); renderSpecies();
       }));
     });
     $$('[data-delete-id]', els.annotationList).forEach(btn => btn.addEventListener('click', () => deleteAnnotation(btn.dataset.deleteId)));
+    $$('[data-accept-id]', els.annotationList).forEach(btn => btn.addEventListener('click', () => {
+      const ann=draft.find(item=>item.id===btn.dataset.acceptId); if(!ann)return;
+      verifyModelLabel(ann,ann.speciesId);syncFrame();toast('Model suggestion accepted');
+    }));
+  }
+
+  function verifyModelLabel(annotation, speciesId) {
+    const matched = speciesId === annotation.modelSuggestedSpeciesId;
+    if(annotation.speciesId!==speciesId)annotation.trackId=nextTrackId(speciesId);
+    annotation.speciesId = speciesId; annotation.verified = true;
+    annotation.labelSource = matched ? 'model_verified' : 'corrected';
+    if (matched) state.model.accepted += 1; else state.model.corrected += 1;
   }
 
   function renderHud() {
     const counts = new Map();
-    draft.forEach(ann => counts.set(ann.speciesId, (counts.get(ann.speciesId) || 0) + 1));
+    draft.filter(ann=>ann.verified!==false).forEach(ann => counts.set(ann.speciesId, (counts.get(ann.speciesId) || 0) + 1));
     const maxBySpecies = new Map(summaryForSpecies().map(row => [row.species.id, row.maxN]));
     els.speciesHud.innerHTML = [...counts].map(([id, count]) => {
       const sp = speciesById(id); const isMax = count > 0 && count === maxBySpecies.get(id);
@@ -227,7 +256,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
 
   function renderFrameCounts() {
     const counts = new Map();
-    draft.forEach(ann => counts.set(ann.speciesId, (counts.get(ann.speciesId) || 0) + 1));
+    draft.filter(ann=>ann.verified!==false).forEach(ann => counts.set(ann.speciesId, (counts.get(ann.speciesId) || 0) + 1));
     const maxBySpecies = new Map(summaryForSpecies().map(row => [row.species.id, row.maxN]));
     $('#frameCountSummary').innerHTML = counts.size ? [...counts].map(([id, count]) => {
       const sp = speciesById(id); const isMax = count > 0 && count === maxBySpecies.get(id);
@@ -240,7 +269,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
       let maxN = 0, maxFrame = null, total = 0, nonzero = 0, first = null;
       const tracks = new Set();
       state.frames.forEach(frame => {
-        const anns = frame.annotations.filter(ann => ann.speciesId === sp.id);
+        const anns = frame.annotations.filter(ann => ann.speciesId === sp.id && ann.verified !== false);
         const count = anns.length;
         if (count) {
           total += count; nonzero += 1;
@@ -288,10 +317,10 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
       const x = box.x + ann.x * box.width, y = box.y + ann.y * box.height, w = ann.w * box.width, h = ann.h * box.height;
       const selected = ann.id === selectedId;
       ctx.save();
-      ctx.strokeStyle = sp.color; ctx.lineWidth = selected ? 3 : 2; ctx.setLineDash(ann.uncertain ? [7, 4] : []);
+      ctx.strokeStyle = sp.color; ctx.lineWidth = selected ? 3 : 2; ctx.setLineDash(ann.uncertain||ann.verified===false ? [7, 4] : []);
       ctx.fillStyle = `${sp.color}1f`; ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]); ctx.font = '700 10px Inter, system-ui, sans-serif';
-      const label = `${sp.code} · ${ann.trackId}`; const tw = ctx.measureText(label).width + 12;
+      const label = `${ann.verified===false?'AI? · ':''}${sp.code} · ${ann.trackId}`; const tw = ctx.measureText(label).width + 12;
       ctx.fillStyle = sp.color; ctx.fillRect(x, Math.max(box.y, y - 20), tw, 20);
       ctx.fillStyle = '#071713'; ctx.fillText(label, x + 6, Math.max(box.y + 13, y - 6));
       if (selected) {
@@ -321,9 +350,46 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
     return `${sp.code}-${String(max + 1).padStart(3, '0')}`;
   }
 
+  function extractVisualFeature(box) {
+    if (demoMode || !videoUrl || els.video.readyState < 2 || !els.video.videoWidth) return null;
+    const sourceWidth=els.video.videoWidth, sourceHeight=els.video.videoHeight;
+    const sx=Math.max(0,Math.round(box.x*sourceWidth)), sy=Math.max(0,Math.round(box.y*sourceHeight));
+    const sw=Math.max(2,Math.min(sourceWidth-sx,Math.round(box.w*sourceWidth))), sh=Math.max(2,Math.min(sourceHeight-sy,Math.round(box.h*sourceHeight)));
+    const canvas=document.createElement('canvas');canvas.width=32;canvas.height=32;
+    const ctx=canvas.getContext('2d',{alpha:false,willReadFrequently:true});ctx.drawImage(els.video,sx,sy,sw,sh,0,0,32,32);
+    const pixels=ctx.getImageData(0,0,32,32).data, bins=new Array(16).fill(0), sums=[0,0,0], squares=[0,0,0];
+    let edge=0,saturation=0;
+    for(let i=0;i<pixels.length;i+=4){
+      const r=pixels[i]/255,g=pixels[i+1]/255,b=pixels[i+2]/255,index=i/4;
+      sums[0]+=r;sums[1]+=g;sums[2]+=b;squares[0]+=r*r;squares[1]+=g*g;squares[2]+=b*b;
+      bins[Math.min(3,Math.floor(r*4))]+=1;bins[4+Math.min(3,Math.floor(g*4))]+=1;bins[8+Math.min(3,Math.floor(b*4))]+=1;
+      const luminance=.2126*r+.7152*g+.0722*b;bins[12+Math.min(3,Math.floor(luminance*4))]+=1;
+      saturation+=Math.max(r,g,b)-Math.min(r,g,b);
+      if(index%32){const previous=.2126*(pixels[i-4]/255)+.7152*(pixels[i-3]/255)+.0722*(pixels[i-2]/255);edge+=Math.abs(luminance-previous);}
+    }
+    const count=32*32,means=sums.map(value=>value/count),std=squares.map((value,i)=>Math.sqrt(Math.max(0,value/count-means[i]*means[i])));
+    return [...bins.map(value=>Number((value/count).toFixed(6))),...means.map(value=>Number(value.toFixed(6))),...std.map(value=>Number(value.toFixed(6))),Number((edge/(count-32)).toFixed(6)),Number((saturation/count).toFixed(6)),Number(Math.min(1,Math.abs(Math.log(sw/sh))/3).toFixed(6))];
+  }
+
+  function modelTrainingExamples(excludeId = null) {
+    return state.frames.flatMap(frame=>frame.annotations).filter(ann=>ann.id!==excludeId&&ann.verified!==false&&Array.isArray(ann.featureVector)&&ann.featureVector.length).map(ann=>({speciesId:ann.speciesId,features:ann.featureVector}));
+  }
+
+  function getModelStats() {
+    const examples=modelTrainingExamples(), classes=new Set(examples.map(example=>example.speciesId)).size;
+    const decisions=state.model.accepted+state.model.corrected;
+    return {examples:examples.length,classes,ready:examples.length>=state.model.minSamples&&classes>=state.model.minClasses,acceptance:decisions?Math.round(state.model.accepted/decisions*100):null};
+  }
+
+  function predictBoxSpecies(features) {
+    if(!features)return null;
+    return predictKnn(modelTrainingExamples(),features,{minSamples:state.model.minSamples,minClasses:state.model.minClasses,k:7});
+  }
+
   function onPointerDown(event) {
     if (!hasMedia()) return;
     const point = eventPoint(event); if (!point.inside) return;
+    pauseMedia();
     els.canvas.setPointerCapture(event.pointerId);
     if (activeTool === 'draw') {
       pointerAction = { type: 'draw', start: point, current: point };
@@ -353,9 +419,14 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
     if (pointerAction.type === 'draw') {
       const rect = normaliseRect(pointerAction.start, eventPoint(event));
       if (rect.w > .008 && rect.h > .008) {
-        const ann = { id: uid('box'), speciesId: state.activeSpeciesId, trackId: nextTrackId(state.activeSpeciesId), x: rect.x, y: rect.y, w: rect.w, h: rect.h, stage: 'Adult', activity: 'Passing', uncertain: false };
+        const featureVector=extractVisualFeature(rect), prediction=state.model.enabled?predictBoxSpecies(featureVector):null;
+        const speciesId=prediction?.speciesId||state.activeSpeciesId;
+        const ann = { id: uid('box'), speciesId, trackId: nextTrackId(speciesId), x: rect.x, y: rect.y, w: rect.w, h: rect.h, stage: 'Adult', activity: 'Passing', uncertain: false, featureVector, verified:!prediction, labelSource:prediction?'model':'manual' };
+        if(prediction){ann.modelSuggestedSpeciesId=prediction.speciesId;ann.modelConfidence=prediction.confidence;ann.modelVersion=state.model.featureVersion;state.model.predictions+=1;}
         draft.push(ann); selectedId = ann.id;
       }
+    } else {
+      const ann=draft.find(item=>item.id===pointerAction.annId);if(ann)ann.featureVector=extractVisualFeature(ann)||ann.featureVector;
     }
     pointerAction = null; syncFrame();
   }
@@ -396,7 +467,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
       $('#videoFileInput').value = '';
       return;
     }
-    if (changingSource) state.frames = [];
+    if (changingSource) { state.frames = []; state.model={...state.model,predictions:0,accepted:0,corrected:0}; }
     pauseMedia(); demoMode = false; els.stage.classList.remove('demo');
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     videoUrl = URL.createObjectURL(file); els.video.src = videoUrl;
@@ -431,33 +502,40 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
     if (!hasMedia()) return toast('Open a video first');
     const previous = [...state.frames].filter(frame => frame.frameNumber < currentKey() && frame.annotations.length).sort((a,b) => b.frameNumber-a.frameNumber)[0];
     if (!previous) return toast('No preceding annotations to clone');
-    draft = structuredClone(previous.annotations).map(ann => ({ ...ann, id: uid('box') }));
+    draft = structuredClone(previous.annotations).map(ann => ({ ...ann, id: uid('box'), featureVector: null, labelSource: 'manual', verified: true }));
     selectedId = null; syncFrame(); toast(`Cloned ${draft.length} boxes from ${formatTime(previous.time)}`);
   }
 
-  function getMaxFrameIds() { return new Set(summaryForSpecies().filter(row => row.maxFrame).map(row => row.maxFrame.id)); }
+  function getMaxFrameIds() {
+    const maximums=new Map(summaryForSpecies().map(row=>[row.species.id,row.maxN])),ids=new Set();
+    state.frames.forEach(frame=>{
+      const counts=new Map();frame.annotations.filter(ann=>ann.verified!==false).forEach(ann=>counts.set(ann.speciesId,(counts.get(ann.speciesId)||0)+1));
+      if([...counts].some(([speciesId,count])=>count>0&&count===maximums.get(speciesId)))ids.add(frame.id);
+    });
+    return ids;
+  }
 
   function renderReview() {
-    const frames = state.frames; const boxes = frames.reduce((sum,f) => sum+f.annotations.length,0); const flagged = frames.reduce((sum,f) => sum+f.annotations.filter(a=>a.uncertain).length,0); const reviewed = frames.filter(f=>f.reviewed).length;
+    const frames = state.frames; const boxes = frames.reduce((sum,f) => sum+f.annotations.filter(a=>a.verified!==false).length,0); const flagged = frames.reduce((sum,f) => sum+f.annotations.filter(a=>a.uncertain||a.verified===false).length,0); const reviewed = frames.filter(f=>f.reviewed).length;
     $('#reviewStats').innerHTML = [
       ['Annotated frames', frames.length], ['Bounding boxes', boxes], ['Needs review', flagged], ['Frames reviewed', frames.length ? `${Math.round(reviewed/frames.length*100)}%` : '0%']
     ].map(([label,value]) => `<div class="stat-card"><span>${label}</span><strong>${value}</strong></div>`).join('');
     const q = $('#reviewSearch').value.trim().toLowerCase(); const maxIds = getMaxFrameIds();
     const maxBySpecies = new Map(summaryForSpecies().map(row => [row.species.id, row.maxN]));
     const shown = frames.filter(frame => {
-      if (reviewFilter === 'flagged' && !frame.annotations.some(a=>a.uncertain) && frame.reviewed) return false;
+      if (reviewFilter === 'flagged' && !frame.annotations.some(a=>a.uncertain||a.verified===false) && frame.reviewed) return false;
       if (reviewFilter === 'maxn' && !maxIds.has(frame.id)) return false;
       const hay = `${frame.note} ${frame.annotations.map(a => `${a.trackId} ${speciesById(a.speciesId).common}`).join(' ')}`.toLowerCase(); return hay.includes(q);
     });
     $('#reviewTableBody').innerHTML = shown.length ? shown.map(frame => {
-      const grouped = new Map(); frame.annotations.forEach(a => grouped.set(a.speciesId, (grouped.get(a.speciesId) || 0) + 1));
-      return `<tr><td><strong>${formatTime(frame.time)}</strong></td><td>${frame.frameNumber}</td><td>${frame.annotations.length} boxes</td><td><div class="species-pills">${[...grouped].map(([id,count]) => { const sp=speciesById(id); const atMax=count===maxBySpecies.get(id); return `<span class="tiny-pill" style="border-left:3px solid ${sp.color}">${escapeHtml(sp.code)} × ${count}${atMax?' · MAXN':''}</span>`; }).join('')}</div></td><td><span class="review-status ${frame.reviewed ? 'done' : ''}">${frame.reviewed ? 'Reviewed' : 'Needs review'}</span></td><td><button class="jump-button" data-jump-frame="${frame.frameNumber}">Open →</button></td></tr>`;
+      const grouped = new Map(); frame.annotations.filter(a=>a.verified!==false).forEach(a => grouped.set(a.speciesId, (grouped.get(a.speciesId) || 0) + 1)); const pending=frame.annotations.filter(a=>a.verified===false).length;
+      return `<tr><td><strong>${formatTime(frame.time)}</strong></td><td>${frame.frameNumber}</td><td>${frame.annotations.length} boxes${pending?` · ${pending} pending`:''}</td><td><div class="species-pills">${[...grouped].map(([id,count]) => { const sp=speciesById(id); const atMax=count===maxBySpecies.get(id); return `<span class="tiny-pill" style="border-left:3px solid ${sp.color}">${escapeHtml(sp.code)} × ${count}${atMax?' · MAXN':''}</span>`; }).join('')}</div></td><td><span class="review-status ${frame.reviewed && !pending ? 'done' : ''}">${frame.reviewed && !pending ? 'Reviewed' : 'Needs review'}</span></td><td><button class="jump-button" data-jump-frame="${frame.frameNumber}">Open →</button></td></tr>`;
     }).join('') : '<tr class="empty-row"><td colspan="6">No annotated frames match this view.</td></tr>';
     $$('[data-jump-frame]').forEach(btn => btn.addEventListener('click', () => { selectView('annotate'); setTime(Number(btn.dataset.jumpFrame)/state.video.fps); }));
   }
 
   function renderDataset() {
-    const rows = summaryForSpecies(); const frames = state.frames.filter(f=>f.annotations.length); const boxes = frames.reduce((s,f)=>s+f.annotations.length,0); const tracks = new Set(frames.flatMap(f=>f.annotations.map(a=>a.trackId))).size; const reviewed = state.frames.length ? Math.round(state.frames.filter(f=>f.reviewed).length/state.frames.length*100) : 0; const totalMaxn = rows.reduce((s,r)=>s+r.maxN,0);
+    const rows = summaryForSpecies(); const frames = state.frames.filter(f=>f.annotations.some(a=>a.verified!==false)); const boxes = frames.reduce((s,f)=>s+f.annotations.filter(a=>a.verified!==false).length,0); const tracks = new Set(frames.flatMap(f=>f.annotations.filter(a=>a.verified!==false).map(a=>a.trackId))).size; const reviewed = state.frames.length ? Math.round(state.frames.filter(f=>f.reviewed&&!f.annotations.some(a=>a.verified===false)).length/state.frames.length*100) : 0; const totalMaxn = rows.reduce((s,r)=>s+r.maxN,0); const pending=state.frames.reduce((sum,f)=>sum+f.annotations.filter(a=>a.verified===false).length,0);
     $('#datasetBoxes').textContent = boxes; $('#datasetFrames').textContent = frames.length; $('#datasetTracks').textContent = tracks; $('#datasetSpecies').textContent = rows.length; $('#datasetMaxn').textContent = totalMaxn; $('#datasetReviewed').textContent = `${reviewed}%`;
     const readiness = Math.min(100, (state.video.name ? 15:0) + (boxes ? 25:0) + (rows.length >= 2 ? 20:0) + Math.round(reviewed*.3) + (state.project.site ? 10:0));
     $('.health-ring').textContent = `${readiness}%`; $('#datasetHealth small').textContent = readiness === 100 ? 'Ready to export' : boxes ? 'Keep reviewing labels' : 'Add boxes to begin';
@@ -467,9 +545,45 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
       [Boolean(state.video.name),'Video metadata', state.video.name || 'No source video recorded'],
       [Boolean(state.project.site && state.project.observer),'Deployment metadata', state.project.site && state.project.observer ? `${state.project.site} · ${state.project.observer}` : 'Add site and observer'],
       [boxes >= 10,'Annotation volume', boxes ? `${boxes} boxes — aim for broad coverage` : 'No boxes yet'],
-      [reviewed === 100 && state.frames.length > 0,'Quality review', `${reviewed}% of annotated frames reviewed`]
+      [reviewed === 100 && state.frames.length > 0 && !pending,'Quality review', `${reviewed}% reviewed · ${pending} model ${pending===1?'guess':'guesses'} pending`]
     ];
     $('#qualityChecklist').innerHTML = checks.map(([ok,title,sub]) => `<div class="check-item"><span class="check-state ${ok?'':'warn'}">${ok?'✓':'!'}</span><span class="check-copy"><strong>${title}</strong><small>${escapeHtml(sub)}</small></span></div>`).join('');
+    renderModelUI();
+  }
+
+  function renderModelUI() {
+    const stats=getModelStats(), enabled=state.model.enabled;
+    $('#modelAssistBtn').classList.toggle('is-enabled',enabled);
+    $('#modelAssistStatus').textContent=enabled?(stats.ready?'Ready':'Learning'):'Off';
+    if($('#modelExamples'))$('#modelExamples').textContent=stats.examples;
+    if($('#modelClasses'))$('#modelClasses').textContent=stats.classes;
+    if($('#modelAccuracy'))$('#modelAccuracy').textContent=stats.acceptance===null?'—':`${stats.acceptance}%`;
+    if($('#datasetModelToggle'))$('#datasetModelToggle').textContent=enabled?'Disable Class Assist':'Enable Class Assist';
+    if($('#modelReadiness'))$('#modelReadiness').textContent=stats.ready?`Ready to suggest labels from ${stats.examples} verified examples across ${stats.classes} species.`:`Learning: ${stats.examples}/${state.model.minSamples} examples and ${stats.classes}/${state.model.minClasses} species available.`;
+  }
+
+  function toggleModelAssist() {
+    state.model.enabled=!state.model.enabled;saveProject();renderModelUI();
+    const stats=getModelStats();
+    toast(state.model.enabled?(stats.ready?'Class Assist enabled and ready':'Class Assist enabled — learning from verified boxes'):'Class Assist disabled');
+  }
+
+  async function bootstrapModelFromExistingLabels() {
+    if(demoMode||!videoUrl||!els.video.videoWidth){selectView('annotate');toast('Open the source video to learn visual features from existing boxes');return;}
+    const frames=state.frames.map(frame=>({frame,annotations:frame.annotations.filter(ann=>ann.verified!==false&&!ann.featureVector)})).filter(item=>item.annotations.length);
+    const total=frames.reduce((sum,item)=>sum+item.annotations.length,0);
+    if(!total){toast('All verified boxes already contribute to Class Assist');return;}
+    pauseMedia();const originalTime=currentTime,dialog=$('#exportProgressDialog');let completed=0;
+    dialog.showModal();updateExportProgress(0,'Learning from verified boxes',`0 of ${total} examples`);
+    try{
+      for(const item of frames){
+        await seekForExtraction(item.frame.time);
+        item.annotations.forEach(annotation=>{annotation.featureVector=extractVisualFeature(annotation);completed+=1;});
+        updateExportProgress(completed/total*100,'Learning from verified boxes',`${completed} of ${total} examples`);
+      }
+      saveProject();updateExportProgress(100,'Class Assist updated',`${getModelStats().examples} visual examples available`);setTimeout(()=>dialog.close(),600);toast('Class Assist learned from existing verified boxes');
+    }catch(error){dialog.close();toast(error.message||'Could not learn from existing boxes');}
+    finally{try{await seekForExtraction(originalTime);}catch(_){/* retain trained features */}currentTime=originalTime;els.timeline.value=originalTime;loadFrameAtTime(true);renderModelUI();}
   }
 
   function downloadBlob(name, blob) {
@@ -480,11 +594,11 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
 
   function perFrameCountLines() {
     const header = ['project','deployment_id','site','video','time_seconds','timecode','frame_number','species_code','common_name','count_in_frame','running_maxn','final_maxn','is_final_maxn_frame','reviewed'];
-    const usedSpeciesIds = [...new Set(state.frames.flatMap(frame => frame.annotations.map(ann => ann.speciesId)))];
+    const usedSpeciesIds = [...new Set(state.frames.flatMap(frame => frame.annotations.filter(ann=>ann.verified!==false).map(ann => ann.speciesId)))];
     const finalSummary = new Map(summaryForSpecies().map(row => [row.species.id, row]));
     const running = new Map(); const lines = [header];
     [...state.frames].sort((a,b)=>a.frameNumber-b.frameNumber).forEach(frame => {
-      const counts = new Map(); frame.annotations.forEach(ann=>counts.set(ann.speciesId,(counts.get(ann.speciesId)||0)+1));
+      const counts = new Map(); frame.annotations.filter(ann=>ann.verified!==false).forEach(ann=>counts.set(ann.speciesId,(counts.get(ann.speciesId)||0)+1));
       usedSpeciesIds.forEach(speciesId => {
         const sp=speciesById(speciesId), count=counts.get(speciesId)||0, summary=finalSummary.get(speciesId);
         running.set(speciesId,Math.max(running.get(speciesId)||0,count));
@@ -527,45 +641,46 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
   }
 
   async function exportTrainingDataset(format) {
-    const frames=state.frames.filter(frame=>frame.annotations.length).sort((a,b)=>a.frameNumber-b.frameNumber);
+    const frames=state.frames.map(frame=>({...frame,annotations:frame.annotations.filter(annotation=>annotation.verified!==false)})).filter(frame=>frame.annotations.length).sort((a,b)=>a.frameNumber-b.frameNumber);
+    const includeImages=$('#includeFramesExport').checked;
     if(!frames.length){toast('Add at least one labelled frame first');return;}
-    if(demoMode||!videoUrl||!els.video.videoWidth){selectView('annotate');toast('Reopen the original video before extracting its labelled frames');return;}
-    if(frames.length>500&&!confirm(`This will extract ${frames.length} full-resolution frames in browser memory. Continue?`))return;
+    if(includeImages&&(demoMode||!videoUrl||!els.video.videoWidth)){selectView('annotate');toast('Reopen the source video or turn off optional frame extraction');return;}
+    if(includeImages&&frames.length>500&&!confirm(`This will extract ${frames.length} full-resolution frames in browser memory. Continue?`))return;
     pauseMedia(); const originalTime=currentTime, dialog=$('#exportProgressDialog'), zip=new ZipStore();
-    dialog.showModal();updateExportProgress(0,'Extracting labelled frames',`0 of ${frames.length} frames`);
+    dialog.showModal();updateExportProgress(0,includeImages?'Extracting labelled frames':'Packaging annotation data',includeImages?`0 of ${frames.length} frames`:`${frames.length} labelled frame references`);
     try {
-      const imageRecords=[];
-      for(let index=0;index<frames.length;index+=1){
-        const frame=frames[index],fileName=extractedImageName(frame),bytes=await extractFrameJpeg(frame);
-        zip.add(`images/${fileName}`,bytes);imageRecords.push({frame,fileName,imageId:index+1});
-        if(format==='yolo'){
-          const classMap=new Map(state.species.map((sp,i)=>[sp.id,i]));
-          const labels=frame.annotations.map(a=>yoloLineFromNormalized(classMap.get(a.speciesId),a)).join('\n');
-          zip.add(`labels/${fileName.replace(/\.jpg$/,'.txt')}`,labels);
+      const imageRecords=frames.map((frame,index)=>({frame,fileName:extractedImageName(frame),imageId:index+1}));
+      if(includeImages){
+        for(let index=0;index<imageRecords.length;index+=1){
+          const record=imageRecords[index],bytes=await extractFrameJpeg(record.frame);zip.add(`images/${record.fileName}`,bytes);
+          updateExportProgress((index+1)/frames.length*82,'Extracting labelled frames',`${index+1} of ${frames.length} frames`);
         }
-        updateExportProgress((index+1)/frames.length*88,'Extracting labelled frames',`${index+1} of ${frames.length} frames`);
       }
       if(format==='coco'){
         const categories=state.species.map((sp,i)=>({id:i+1,name:sp.common,supercategory:'fish',scientific_name:sp.scientific,code:sp.code}));
         const categoryMap=new Map(state.species.map((sp,i)=>[sp.id,i+1]));let annotationId=1;
         const images=imageRecords.map(({frame,fileName,imageId})=>({id:imageId,file_name:`images/${fileName}`,width:state.video.width,height:state.video.height,video_file:state.video.name,frame_number:frame.frameNumber,timestamp_seconds:Number(frame.time.toFixed(3)),deployment_id:state.project.deploymentId}));
-        const annotations=imageRecords.flatMap(({frame,imageId})=>frame.annotations.map(ann=>{const bbox=cocoBoxFromNormalized(ann,state.video.width,state.video.height);return{id:annotationId++,image_id:imageId,category_id:categoryMap.get(ann.speciesId),bbox,area:Number((bbox[2]*bbox[3]).toFixed(2)),iscrowd:0,track_id:ann.trackId,attributes:{stage:ann.stage,activity:ann.activity,uncertain:ann.uncertain}};}));
+        const annotations=imageRecords.flatMap(({frame,imageId})=>frame.annotations.map(ann=>{const bbox=cocoBoxFromNormalized(ann,state.video.width,state.video.height);return{id:annotationId++,image_id:imageId,category_id:categoryMap.get(ann.speciesId),bbox,area:Number((bbox[2]*bbox[3]).toFixed(2)),iscrowd:0,track_id:ann.trackId,attributes:{stage:ann.stage,activity:ann.activity,uncertain:ann.uncertain,label_source:ann.labelSource||'manual',model_confidence:ann.modelConfidence??null}};}));
         zip.add('annotations/instances.json',JSON.stringify({info:{description:state.project.name,version:'1.0',created:new Date().toISOString(),source:'FinFrame',deployment_id:state.project.deploymentId},images,annotations,categories},null,2));
       } else {
-        const yaml=['# FinFrame YOLO dataset','# Keep complete deployments together when creating train/val/test splits.','path: .','train: images','names:',...state.species.map((sp,i)=>`  ${i}: ${JSON.stringify(sp.common)}`)].join('\n');
+        const classMap=new Map(state.species.map((sp,i)=>[sp.id,i]));
+        imageRecords.forEach(({frame,fileName})=>zip.add(`labels/${fileName.replace(/\.jpg$/,'.txt')}`,frame.annotations.map(a=>yoloLineFromNormalized(classMap.get(a.speciesId),a)).join('\n')));
+        const yaml=['# FinFrame YOLO dataset','# Images are optional and can be extracted later from metadata/frame_manifest.csv.','# Keep complete deployments together when creating train/val/test splits.','path: .','train: images','names:',...state.species.map((sp,i)=>`  ${i}: ${JSON.stringify(sp.common)}`)].join('\n');
         zip.add('data.yaml',yaml);zip.add('classes.txt',state.species.map(sp=>sp.common).join('\n'));
       }
+      const manifest=[['image_file','source_video','frame_number','time_seconds','width','height','image_included'],...imageRecords.map(({frame,fileName})=>[fileName,state.video.name,frame.frameNumber,frame.time.toFixed(6),state.video.width,state.video.height,includeImages])];
       zip.add('metadata/project.finframe.json',JSON.stringify(state,null,2));
       zip.add('metadata/per_frame_counts.csv',csvText(perFrameCountLines()));
-      zip.add('README.txt',`FinFrame ${format.toUpperCase()} export\n\nEach JPEG is the exact annotated video frame. Bounding boxes use the uncropped source dimensions ${state.video.width}x${state.video.height}.\n\nDo not randomly split neighbouring frames from this deployment across training and validation sets; split by deployment/video to prevent data leakage.\n`);
+      zip.add('metadata/frame_manifest.csv',csvText(manifest));
+      zip.add('README.txt',`FinFrame ${format.toUpperCase()} export\n\nFrame images included: ${includeImages?'yes':'no'}\n\nBounding boxes use the uncropped source dimensions ${state.video.width}x${state.video.height}. When images are omitted, metadata/frame_manifest.csv identifies the exact source video timestamps and frame numbers for later extraction.\n\nOnly verified labels are exported. Pending Class Assist guesses remain in the project audit file but are excluded from model labels and MaxN.\n\nDo not randomly split neighbouring frames from this deployment across training and validation sets; split by deployment/video to prevent data leakage.\n`);
       updateExportProgress(94,'Packaging dataset','Building ZIP archive…');
-      const blob=new Blob([zip.build()],{type:'application/zip'});updateExportProgress(100,'Dataset ready',`${frames.length} images · ${(blob.size/1024/1024).toFixed(1)} MB`);
+      const blob=new Blob([zip.build()],{type:'application/zip'});updateExportProgress(100,'Dataset ready',`${frames.length} labelled frames${includeImages?' with images':''} · ${(blob.size/1024/1024).toFixed(1)} MB`);
       downloadBlob(`${safeFileName(state.project.name)}_${format}_dataset.zip`,blob);
-      setTimeout(()=>dialog.close(),650);toast(`${format.toUpperCase()} dataset exported with ${frames.length} images`);
+      setTimeout(()=>dialog.close(),650);toast(`${format.toUpperCase()} labels exported${includeImages?' with frame images':''}`);
     } catch(error) {
       dialog.close();toast(error.message||'Dataset extraction failed');
     } finally {
-      try{await seekForExtraction(originalTime);}catch(_){/* preserve export result */}
+      if(includeImages){try{await seekForExtraction(originalTime);}catch(_){/* preserve export result */}}
       currentTime=originalTime;els.timeline.value=originalTime;loadFrameAtTime(true);
     }
   }
@@ -575,7 +690,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
   function exportCsv() {
     const header=['project','deployment_id','site','observer','video','time_seconds','timecode','frame_number','species_code','common_name','scientific_name','count_in_frame','is_maxn_frame','maxn','first_arrival_seconds','mean_count','stage','track_id','uncertain','x','y','width','height','reviewed','note'];
     const summary = new Map(summaryForSpecies().map(row=>[row.species.id,row])); const lines=[header];
-    state.frames.forEach(frame => { const counts=new Map(); frame.annotations.forEach(a=>counts.set(a.speciesId,(counts.get(a.speciesId)||0)+1)); frame.annotations.forEach(a=>{ const sp=speciesById(a.speciesId), s=summary.get(a.speciesId); lines.push([state.project.name,state.project.deploymentId,state.project.site,state.project.observer,state.video.name,frame.time.toFixed(3),formatTime(frame.time),frame.frameNumber,sp.code,sp.common,sp.scientific,counts.get(a.speciesId),s?.maxFrame?.id===frame.id,s?.maxN??0,s?.first?.toFixed(3)??'',s?.mean?.toFixed(3)??'',a.stage,a.trackId,a.uncertain,a.x,a.y,a.w,a.h,frame.reviewed,frame.note]); }); });
+    state.frames.forEach(frame => { const verified=frame.annotations.filter(a=>a.verified!==false),counts=new Map(); verified.forEach(a=>counts.set(a.speciesId,(counts.get(a.speciesId)||0)+1)); verified.forEach(a=>{ const sp=speciesById(a.speciesId), s=summary.get(a.speciesId); lines.push([state.project.name,state.project.deploymentId,state.project.site,state.project.observer,state.video.name,frame.time.toFixed(3),formatTime(frame.time),frame.frameNumber,sp.code,sp.common,sp.scientific,counts.get(a.speciesId),s?.maxFrame?.id===frame.id,s?.maxN??0,s?.first?.toFixed(3)??'',s?.mean?.toFixed(3)??'',a.stage,a.trackId,a.uncertain,a.x,a.y,a.w,a.h,frame.reviewed,frame.note]); }); });
     download(`${safeFileName(state.project.name)}_observations.csv`,csvText(lines),'text/csv'); toast('Observation CSV exported');
   }
 
@@ -606,6 +721,9 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
   els.speedSelect.addEventListener('change',()=>{ els.video.playbackRate=Number(els.speedSelect.value); });
   els.canvas.addEventListener('pointerdown',onPointerDown); els.canvas.addEventListener('pointermove',onPointerMove); els.canvas.addEventListener('pointerup',onPointerUp); els.canvas.addEventListener('pointercancel',()=>{pointerAction=null;drawCanvas();});
   $('#cloneBtn').addEventListener('click',clonePreviousFrame);
+  $('#modelAssistBtn').addEventListener('click',toggleModelAssist);
+  $('#datasetModelToggle').addEventListener('click',toggleModelAssist);
+  $('#bootstrapModelBtn').addEventListener('click',bootstrapModelFromExistingLabels);
   $('#clearFrameBtn').addEventListener('click',()=>{ if(!draft.length)return; if(confirm('Remove every box from this frame?')){draft=[];selectedId=null;syncFrame();} });
   els.frameNote.addEventListener('change',()=>syncFrame({createEmpty:Boolean(els.frameNote.value.trim())}));
   $('#markReviewedBtn').addEventListener('click',()=>{ let frame=getFrame(); if(!frame){syncFrame({createEmpty:true});frame=getFrame();} frame.reviewed=!frame.reviewed;saveProject();renderFrame();toast(frame.reviewed?'Frame marked reviewed':'Review status removed'); });
@@ -616,7 +734,7 @@ import { ZipStore, csvText, cocoBoxFromNormalized, yoloLineFromNormalized } from
   $('#detailsForm').addEventListener('submit',event=>{ if(event.submitter?.value==='cancel')return;event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));state.project={...state.project,name:data.projectName,...data};delete state.project.projectName;saveProject();renderProjectInfo();$('#detailsDialog').close();toast('Deployment details saved'); });
   $('#exportProjectBtn').addEventListener('click',exportProject);
   $('#importProjectBtn').addEventListener('click',()=>$('#projectFileInput').click());
-  $('#projectFileInput').addEventListener('change',async event=>{ try{const incoming=JSON.parse(await event.target.files[0].text());if(!incoming.schemaVersion||!Array.isArray(incoming.frames)||!Array.isArray(incoming.species))throw new Error();state=incoming;demoMode=false;videoUrl=null;currentTime=0;currentFrameKey=null;els.stage.classList.remove('ready','has-video','demo');renderAll();saveProject();toast('Project imported — reopen its video to continue');}catch(_){toast('That file is not a valid FinFrame project');}event.target.value=''; });
+  $('#projectFileInput').addEventListener('change',async event=>{ try{const incoming=JSON.parse(await event.target.files[0].text());if(!incoming.schemaVersion||!Array.isArray(incoming.frames)||!Array.isArray(incoming.species))throw new Error();state=upgradeProject(incoming);demoMode=false;videoUrl=null;currentTime=0;currentFrameKey=null;els.stage.classList.remove('ready','has-video','demo');renderAll();saveProject();toast('Project imported — reopen its video to continue');}catch(_){toast('That file is not a valid FinFrame project');}event.target.value=''; });
   $$('.table-tab').forEach(btn=>btn.addEventListener('click',()=>{reviewFilter=btn.dataset.reviewFilter;$$('.table-tab').forEach(b=>b.classList.toggle('is-active',b===btn));renderReview();}));
   $('#reviewSearch').addEventListener('input',renderReview); $('#reviewAllBtn').addEventListener('click',()=>{state.frames.forEach(f=>f.reviewed=true);saveProject();renderReview();toast('All annotated frames marked reviewed');});
   $$('[data-export]').forEach(btn=>btn.addEventListener('click',()=>({coco:exportCoco,yolo:exportYolo,csv:exportCsv,framecsv:exportFrameCsv,project:exportProject}[btn.dataset.export]())));

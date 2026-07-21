@@ -13,8 +13,9 @@ FinFrame is a local-first browser prototype for annotating fish in underwater vi
 - Review table with flagged-annotation and MaxN-frame filters
 - Autosave in browser storage
 - Full project JSON import/export
-- One-click extraction of the exact labelled video frames at native resolution
-- Complete COCO and YOLO dataset ZIPs containing JPEG images, labels, taxonomy, project metadata and per-frame counts
+- Optional one-click extraction of the exact labelled video frames at native resolution
+- COCO and YOLO dataset ZIPs containing labels, frame manifests, taxonomy, project metadata and per-frame counts, with JPEG images included only when requested
+- On-device Class Assist that learns from verified crops and suggests species for newly drawn boxes
 - Ecology observation CSV and dedicated per-frame count/MaxN CSV exports
 - Responsive interface and a built-in sample survey
 
@@ -32,7 +33,19 @@ Then open `http://127.0.0.1:4173`.
 
 This first version covers the single-camera annotation and MaxN workflow. True stereo 3D length/range measurement requires camera calibration, frame synchronisation and photogrammetric reconstruction, so it should be treated as a separate validated module rather than inferred from a 2D box.
 
-The original source video must be open when a COCO or YOLO dataset is exported. FinFrame seeks to every labelled frame, extracts a high-quality JPEG at the video's native dimensions and packages the image with its matching labels. The export is performed locally in the browser; neither footage nor labels are uploaded.
+The original source video is not required for label-only COCO or YOLO exports. Every dataset includes a frame manifest with source filename, frame number, timestamp and dimensions. If **Include extracted frame images** is selected, FinFrame seeks to each labelled frame and packages a high-quality JPEG at the video's native dimensions. Extraction is entirely local; neither footage nor labels are uploaded.
+
+## Class Assist
+
+Class Assist is an optional local learning loop for the stage after a student draws a bounding box. It extracts a compact colour, texture and shape feature vector from verified fish crops and uses distance-weighted nearest neighbours to suggest the species of new boxes.
+
+- Learning begins from manually labelled or corrected boxes while the source video is open.
+- Existing verified annotations can be added with **Learn from existing boxes**.
+- Suggestions remain pending until a student accepts the guess or chooses a different species.
+- Pending guesses are excluded from MaxN, observation CSVs, COCO labels and YOLO labels.
+- Accepted and corrected predictions become new verified training examples, allowing the assistant to improve during the annotation session.
+
+This lightweight classifier is intended for immediate, private, in-browser assistance. It is not a replacement for training a full detector such as YOLO on the exported dataset; the export formats remain the path to a production model that can detect fish without a student first drawing a box.
 
 ## Machine-learning compatibility
 
@@ -44,6 +57,7 @@ FinFrame treats model compatibility as a core data-contract requirement:
 - Every exported image is linked to its source video, frame number, timestamp and deployment ID.
 - Track IDs, life stage, activity, uncertainty and review state are preserved in the project and COCO attributes.
 - The complete editable project is bundled with each dataset so labels remain auditable.
+- Unverified model suggestions are retained for auditing but excluded from released labels and abundance metrics.
 
 Do not randomly split nearby frames from one video between training and validation. They are highly correlated and will inflate validation performance. Combine multiple deployment exports and split whole deployments or videos into train, validation and test groups.
 

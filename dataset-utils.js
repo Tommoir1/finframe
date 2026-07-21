@@ -26,6 +26,23 @@ export function yoloLineFromNormalized(classId, box) {
   return `${classId} ${(box.x + box.w / 2).toFixed(6)} ${(box.y + box.h / 2).toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`;
 }
 
+export function predictKnn(samples, features, options = {}) {
+  const minSamples = options.minSamples ?? 4, minClasses = options.minClasses ?? 2, k = options.k ?? 7;
+  if (!Array.isArray(features) || !features.length || samples.length < minSamples) return null;
+  const classes = new Set(samples.map(sample => sample.speciesId));
+  if (classes.size < minClasses) return null;
+  const compatible = samples.filter(sample => Array.isArray(sample.features) && sample.features.length === features.length);
+  if (compatible.length < minSamples) return null;
+  const nearest = compatible.map(sample => {
+    const distance = Math.sqrt(features.reduce((sum, value, index) => sum + (value - sample.features[index]) ** 2, 0) / features.length);
+    return { speciesId: sample.speciesId, distance };
+  }).sort((a, b) => a.distance - b.distance).slice(0, Math.min(k, compatible.length));
+  const scores = new Map();
+  nearest.forEach(item => scores.set(item.speciesId, (scores.get(item.speciesId) || 0) + 1 / (item.distance + 0.025)));
+  const ranked = [...scores].sort((a, b) => b[1] - a[1]), total = ranked.reduce((sum, item) => sum + item[1], 0);
+  return { speciesId: ranked[0][0], confidence: Number((ranked[0][1] / total).toFixed(4)), neighbours: nearest.length };
+}
+
 function dosDateTime(date = new Date()) {
   const year = Math.max(1980, date.getFullYear());
   return {

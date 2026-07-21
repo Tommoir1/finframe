@@ -82,6 +82,7 @@
           </div>
           <div class="toolbar-divider"></div>
           <button class="tool-button" id="cloneBtn" title="Copy boxes from the preceding annotated frame">⧉ Clone previous</button>
+          <button class="tool-button ai-assist-button" id="modelAssistBtn" title="Learn from verified labels and suggest species for new boxes"><span>✦</span> Class Assist <em id="modelAssistStatus">Off</em></button>
           <button class="tool-button danger-quiet" id="clearFrameBtn" title="Remove boxes from this frame">Clear frame</button>
           <div class="toolbar-spacer"></div>
           <div class="frame-badge"><span class="live-dot"></span><span id="frameState">Frame not annotated</span></div>
@@ -201,8 +202,9 @@
         <div class="data-card export-card">
           <div class="card-heading"><span class="card-icon coral">▱</span><div><h2>Bounding-box labels</h2><p>For object detection and tracking pipelines</p></div></div>
           <div class="export-stats"><div><strong id="datasetBoxes">0</strong><span>boxes</span></div><div><strong id="datasetFrames">0</strong><span>frames</span></div><div><strong id="datasetTracks">0</strong><span>tracks</span></div></div>
-          <div class="format-row"><span><strong>COCO dataset ZIP</strong><small>Extracted JPEG frames and pixel-coordinate labels</small></span><button class="button button-primary" data-export="coco">Extract &amp; export</button></div>
-          <div class="format-row"><span><strong>YOLO dataset ZIP</strong><small>Extracted JPEG frames and normalised labels</small></span><button class="button button-secondary" data-export="yolo">Extract &amp; export</button></div>
+          <label class="export-option"><input id="includeFramesExport" type="checkbox"><span><strong>Include extracted frame images</strong><small>Optional · requires the source video to be open</small></span></label>
+          <div class="format-row"><span><strong>COCO dataset ZIP</strong><small>Pixel-coordinate labels with optional JPEG frames</small></span><button class="button button-primary" data-export="coco">Export</button></div>
+          <div class="format-row"><span><strong>YOLO dataset ZIP</strong><small>Normalised labels with optional JPEG frames</small></span><button class="button button-secondary" data-export="yolo">Export</button></div>
         </div>
         <div class="data-card export-card">
           <div class="card-heading"><span class="card-icon teal">≋</span><div><h2>Ecology observations</h2><p>Analysis-ready survey summaries</p></div></div>
@@ -218,6 +220,13 @@
         <div class="data-card checklist-card">
           <div class="card-heading"><span class="card-icon blue">✓</span><div><h2>Before you train</h2><p>Automated quality checks</p></div></div>
           <div id="qualityChecklist"></div>
+        </div>
+        <div class="data-card model-card">
+          <div class="card-heading"><span class="card-icon violet">✦</span><div><h2>Class Assist</h2><p>On-device learning from verified fish boxes</p></div></div>
+          <div class="export-stats"><div><strong id="modelExamples">0</strong><span>examples</span></div><div><strong id="modelClasses">0</strong><span>classes</span></div><div><strong id="modelAccuracy">—</strong><span>acceptance</span></div></div>
+          <p class="model-explainer">After enough examples, newly drawn boxes receive a species suggestion. Guesses never affect MaxN or training exports until accepted or corrected.</p>
+          <div class="model-actions"><button class="button button-primary grow" id="datasetModelToggle">Enable Class Assist</button><button class="button button-secondary grow" id="bootstrapModelBtn">Learn from existing boxes</button></div>
+          <div class="model-readiness" id="modelReadiness">Needs verified examples from at least two species.</div>
         </div>
       </div>
     </section>
@@ -248,7 +257,7 @@
     <div class="export-progress-content">
       <span class="export-spinner" aria-hidden="true"></span>
       <div class="eyebrow">Dataset builder</div>
-      <h2 id="exportProgressTitle">Extracting labelled frames</h2>
+      <h2 id="exportProgressTitle">Preparing dataset</h2>
       <p id="exportProgressDetail">Preparing video…</p>
       <progress id="exportProgressBar" value="0" max="100"></progress>
       <strong id="exportProgressValue">0%</strong>

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ZipStore, cocoBoxFromNormalized, crc32, csvText, yoloLineFromNormalized } from '../dataset-utils.js';
+import { ZipStore, cocoBoxFromNormalized, crc32, csvText, predictKnn, yoloLineFromNormalized } from '../dataset-utils.js';
 
 test('COCO geometry converts normalised top-left boxes to pixels', () => {
   assert.deepEqual(cocoBoxFromNormalized({ x: 0.125, y: 0.25, w: 0.5, h: 0.25 }, 1920, 1080), [240, 270, 960, 270]);
@@ -31,4 +31,20 @@ test('ZIP store writes local, central-directory and end signatures', async () =>
 test('ZIP store rejects path traversal', () => {
   const zip = new ZipStore();
   assert.throws(() => zip.add('../private.txt', 'no'), /relative/);
+});
+
+test('Class Assist predicts the nearest verified species', () => {
+  const samples = [
+    { speciesId: 'snapper', features: [0.9, 0.1, 0.2] },
+    { speciesId: 'snapper', features: [0.8, 0.2, 0.2] },
+    { speciesId: 'wrasse', features: [0.1, 0.8, 0.7] },
+    { speciesId: 'wrasse', features: [0.2, 0.9, 0.6] }
+  ];
+  const prediction = predictKnn(samples, [0.86, 0.15, 0.2]);
+  assert.equal(prediction.speciesId, 'snapper');
+  assert.ok(prediction.confidence > 0.5);
+});
+
+test('Class Assist waits for enough examples and classes', () => {
+  assert.equal(predictKnn([{ speciesId: 'snapper', features: [1, 0] }], [1, 0]), null);
 });

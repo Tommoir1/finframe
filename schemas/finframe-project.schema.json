@@ -69,7 +69,20 @@
         "additionalProperties": false
       }
     },
-    "activeSpeciesId": { "type": "string" }
+    "activeSpeciesId": { "type": "string" },
+    "model": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minSamples": { "type": "integer", "minimum": 1 },
+        "minClasses": { "type": "integer", "minimum": 2 },
+        "predictions": { "type": "integer", "minimum": 0 },
+        "accepted": { "type": "integer", "minimum": 0 },
+        "corrected": { "type": "integer", "minimum": 0 },
+        "featureVersion": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
   },
   "$defs": {
     "normalisedCoordinate": { "type": "number", "minimum": 0, "maximum": 1 },
@@ -86,7 +99,16 @@
         "h": { "allOf": [{ "$ref": "#/$defs/normalisedCoordinate" }, { "exclusiveMinimum": 0 }] },
         "stage": { "type": "string" },
         "activity": { "type": "string" },
-        "uncertain": { "type": "boolean" }
+        "uncertain": { "type": "boolean" },
+        "verified": { "type": "boolean" },
+        "labelSource": { "enum": ["manual", "model", "model_verified", "corrected"] },
+        "featureVector": {
+          "type": ["array", "null"],
+          "items": { "type": "number" }
+        },
+        "modelSuggestedSpeciesId": { "type": "string" },
+        "modelConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "modelVersion": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     }
