@@ -1,130 +1,119 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://finframe.local/schemas/finframe-project.schema.json",
-  "title": "FinFrame annotation project",
+  "title": "FinFrame Desktop project backup",
   "type": "object",
-  "required": ["schemaVersion", "project", "video", "species", "frames"],
+  "required": ["schemaVersion", "project", "species", "videos"],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": "2.0" },
+    "project": { "$ref": "#/$defs/project" },
+    "species": { "type": "array", "items": { "$ref": "#/$defs/species" } },
+    "videos": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/video" },
+          {
+            "type": "object",
+            "required": ["frames"],
+            "properties": {
+              "frames": { "type": "array", "items": { "$ref": "#/$defs/frame" } }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
     "project": {
       "type": "object",
-      "required": ["name", "createdAt", "updatedAt"],
+      "required": ["id", "name", "created_at", "updated_at"],
       "properties": {
+        "id": { "type": "string" },
         "name": { "type": "string", "minLength": 1 },
-        "deploymentId": { "type": "string" },
+        "deployment_id": { "type": "string" },
         "site": { "type": "string" },
         "observer": { "type": "string" },
-        "date": { "type": "string" },
-        "depth": { "type": ["string", "number"] },
+        "survey_date": { "type": "string" },
+        "depth": { "type": "string" },
         "notes": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "additionalProperties": true
-    },
-    "video": {
-      "type": "object",
-      "required": ["name", "duration", "width", "height", "fps"],
-      "properties": {
-        "name": { "type": "string" },
-        "duration": { "type": "number", "minimum": 0 },
-        "width": { "type": "integer", "minimum": 1 },
-        "height": { "type": "integer", "minimum": 1 },
-        "fps": { "type": "number", "exclusiveMinimum": 0 }
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
     },
     "species": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "common", "scientific", "code", "color"],
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "common": { "type": "string", "minLength": 1 },
-          "scientific": { "type": "string" },
-          "code": { "type": "string", "minLength": 1 },
-          "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
-        },
-        "additionalProperties": false
-      }
-    },
-    "frames": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "time", "frameNumber", "annotations", "reviewed"],
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "time": { "type": "number", "minimum": 0 },
-          "frameNumber": { "type": "integer", "minimum": 0 },
-          "annotations": {
-            "type": "array",
-            "items": { "$ref": "#/$defs/annotation" }
-          },
-          "note": { "type": "string" },
-          "reviewed": { "type": "boolean" },
-          "savedAt": { "type": "string", "format": "date-time" }
-        },
-        "additionalProperties": false
-      }
-    },
-    "activeSpeciesId": { "type": "string" },
-    "model": {
       "type": "object",
+      "required": ["id", "common_name", "scientific_name", "code", "color", "created_at"],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "minSamples": { "type": "integer", "minimum": 1 },
-        "minClasses": { "type": "integer", "minimum": 2 },
-        "predictions": { "type": "integer", "minimum": 0 },
-        "accepted": { "type": "integer", "minimum": 0 },
-        "corrected": { "type": "integer", "minimum": 0 },
-        "featureVersion": { "type": "integer", "minimum": 1 }
+        "id": { "type": "string" },
+        "common_name": { "type": "string", "minLength": 1 },
+        "scientific_name": { "type": "string" },
+        "code": { "type": "string", "minLength": 1 },
+        "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "created_at": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
     },
-    "tracking": {
+    "video": {
       "type": "object",
+      "required": ["id", "project_id", "path", "file_name", "duration", "width", "height", "fps", "frame_count", "created_at"],
       "properties": {
-        "runs": { "type": "integer", "minimum": 0 },
-        "proposals": { "type": "integer", "minimum": 0 },
-        "accepted": { "type": "integer", "minimum": 0 },
-        "corrected": { "type": "integer", "minimum": 0 },
-        "lastTracker": { "type": "string" }
+        "id": { "type": "string" },
+        "project_id": { "type": "string" },
+        "path": { "type": "string" },
+        "file_name": { "type": "string" },
+        "duration": { "type": "number", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 0 },
+        "height": { "type": "integer", "minimum": 0 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 },
+        "frame_count": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "frames": { "type": "array", "items": { "$ref": "#/$defs/frame" } }
       },
       "additionalProperties": false
-    }
-  },
-  "$defs": {
-    "normalisedCoordinate": { "type": "number", "minimum": 0, "maximum": 1 },
+    },
+    "frame": {
+      "type": "object",
+      "required": ["id", "video_id", "frame_number", "time_seconds", "reviewed", "note", "updated_at", "annotations"],
+      "properties": {
+        "id": { "type": "string" },
+        "video_id": { "type": "string" },
+        "frame_number": { "type": "integer", "minimum": 0 },
+        "time_seconds": { "type": "number", "minimum": 0 },
+        "reviewed": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "note": { "type": "string" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "annotations": { "type": "array", "items": { "$ref": "#/$defs/annotation" } }
+      },
+      "additionalProperties": false
+    },
     "annotation": {
       "type": "object",
-      "required": ["id", "speciesId", "trackId", "x", "y", "w", "h"],
+      "required": ["id", "frame_id", "species_id", "track_id", "x", "y", "width", "height", "status", "source", "created_at", "updated_at"],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "speciesId": { "type": "string", "minLength": 1 },
-        "trackId": { "type": "string", "minLength": 1 },
-        "x": { "$ref": "#/$defs/normalisedCoordinate" },
-        "y": { "$ref": "#/$defs/normalisedCoordinate" },
-        "w": { "allOf": [{ "$ref": "#/$defs/normalisedCoordinate" }, { "exclusiveMinimum": 0 }] },
-        "h": { "allOf": [{ "$ref": "#/$defs/normalisedCoordinate" }, { "exclusiveMinimum": 0 }] },
-        "stage": { "type": "string" },
+        "id": { "type": "string" },
+        "frame_id": { "type": "string" },
+        "species_id": { "type": "string" },
+        "track_id": { "type": "string" },
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "life_stage": { "type": "string" },
         "activity": { "type": "string" },
-        "uncertain": { "type": "boolean" },
-        "verified": { "type": "boolean" },
-        "labelSource": { "enum": ["manual", "model", "model_verified", "corrected", "tracker", "tracker_verified", "tracker_corrected"] },
-        "featureVector": {
-          "type": ["array", "null"],
-          "items": { "type": "number" }
-        },
-        "modelSuggestedSpeciesId": { "type": "string" },
-        "modelConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
-        "modelVersion": { "type": "integer", "minimum": 1 },
-        "trackingSource": { "enum": ["bytetrack", "botsort"] },
-        "trackingRunId": { "type": "string" }
+        "uncertain": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "status": { "enum": ["pending", "verified", "rejected"] },
+        "source": { "enum": ["manual", "ai", "ai_verified", "ai_corrected", "tracker", "tracker_verified", "tracker_corrected"] },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "model_id": { "type": ["string", "null"] },
+        "created_by": { "type": "string" },
+        "modified": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  }
 }

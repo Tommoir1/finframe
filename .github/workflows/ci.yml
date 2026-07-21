@@ -12,8 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-      - run: node --check app.js && node --check dataset-utils.js
-      - run: npm test
+          python-version: "3.11"
+      - run: python -m pip install ruff
+      - run: python -m ruff check finframe tests finframe_launcher.py
+      - run: python -m compileall -q finframe finframe_launcher.py
+      - run: python -m unittest discover -s tests -p "test_*.py" -v
+      - run: python -c "import json, pathlib; json.loads(pathlib.Path('schemas/finframe-project.schema.json').read_text())"
