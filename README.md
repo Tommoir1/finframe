@@ -1,80 +1,126 @@
-# FinFrame
+# FinFrame Desktop
 
-FinFrame is a local-first browser prototype for annotating fish in underwater video. It combines the familiar EventMeasure-style abundance workflow with bounding boxes that can be reused as object-detection labels.
+FinFrame is a Python desktop replacement for the single-camera EventMeasure MaxN workflow. Students annotate fish once for ecological analysis; the same verified bounding boxes accumulate automatically into an object-detection dataset.
 
-## What works
+The application is local-first. Video remains on the workstation, while projects, taxonomy, annotations, review decisions, training runs and model versions are stored in one SQLite database.
 
-- Local MP4/MOV/WebM playback with scrubbing, speed control, five-second jumps and frame stepping
+## Student workflow
+
+1. Create a survey project and record deployment, site and observer metadata.
+2. Add one or more source videos.
+3. Select a species and draw a box around every visible fish on an observation frame.
+4. FinFrame immediately calculates verified per-frame counts and per-species MaxN.
+5. Manual boxes enter the shared training dataset as verified labels.
+6. AI or tracker boxes enter as pending proposals and are visibly dashed.
+7. A student must approve, correct or reject every proposal.
+8. Only approved or corrected proposals enter MaxN, exports and retraining.
+
+All projects in the database contribute to training. Opening another video does not discard earlier annotations.
+
+Project backups can be imported into another FinFrame installation. This provides a practical collection workflow for a teaching cohort: students submit `.finframe.json` backups, and an instructor imports them into the training workstation. Verified labels retain observer attribution and pending proposals remain pending. If source paths differ on the training workstation, selecting a missing video opens a relink workflow before frame extraction or training.
+
+## Desktop features
+
+- Native PySide6 desktop interface; no browser or separate local web server
+- OpenCV video playback, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
-- Species taxonomy, stable track IDs, life stage, activity and uncertainty flags
-- Clone boxes from the preceding annotated frame
-- Live per-species counts on every annotated frame, MaxN-frame badges, running MaxN, final MaxN, mean count and first-arrival calculation
-- Deployment metadata, frame notes and review status
-- Review table with flagged-annotation and MaxN-frame filters
-- Autosave in browser storage
-- Full project JSON import/export
-- Optional one-click extraction of the exact labelled video frames at native resolution
-- COCO and YOLO dataset ZIPs containing labels, frame manifests, taxonomy, project metadata and per-frame counts, with JPEG images included only when requested
-- Shared on-device Class Assist that learns from verified crops across annotated videos and suggests species for newly drawn boxes
-- Optional local detector tracking with ByteTrack or BoT-SORT; imported tracks remain review proposals
-- Ecology observation CSV and dedicated per-frame count/MaxN CSV exports
-- Responsive interface and a built-in sample survey
+- Shared species taxonomy, scientific names, stable codes and track IDs
+- Life stage, activity, uncertainty and student/observer attribution
+- Verified per-frame counts and live per-species MaxN
+- Audited `pending`, `verified` and `rejected` annotation states
+- AI suggestions on the current frame
+- Species suggestions for newly drawn boxes once an active detector exists; these remain pending until reviewed
+- Whole-video ByteTrack or BoT-SORT proposals using the active detector
+- COCO and YOLO exports across every verified project
+- Optional extraction of native-resolution labelled JPEG frames
+- Project JSON backups and label-only exports with frame manifests
+- Automatic detector retraining and model versioning
 
-## Run it
+## Approval and dataset safety
 
-This is a dependency-free static app. From this folder, run:
+AI output is never treated as truth. A detector or tracker proposal is stored as `pending` and is excluded from:
+
+- MaxN and per-frame ecological counts
+- COCO and YOLO labels
+- detector retraining
+- released observation data
+
+Approving an unchanged proposal records `ai_verified` or `tracker_verified`. Changing its class, geometry or metadata before approval records `ai_corrected` or `tracker_corrected`. Rejected proposals remain outside the dataset.
+
+## Frequent retraining
+
+The default policy checks for retraining after every **10 verified dataset changes**, with a two-minute cooldown. A dataset change includes:
+
+- a new manual annotation
+- an approved or corrected AI/tracker proposal
+- a verified class or geometry correction
+- deletion of an incorrect verified box
+
+Training starts after at least 20 verified boxes across at least two species. Every run rebuilds the detector dataset from all verified annotations across all projects and videos. Pending predictions cannot reinforce themselves.
+
+Each candidate is evaluated on held-out data. The current model remains active unless the candidate meets the configured mAP50-95 improvement gate. When at least two videos exist, complete videos are held out; a one-video temporal split is marked as preliminary.
+
+## Installation
+
+Python 3.10 or newer is required.
 
 ```powershell
-python -m http.server 4173
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+python -m finframe
 ```
 
-Then open `http://127.0.0.1:4173`.
+The first training run uses `yolo11n.pt` by default. Ultralytics may download those base weights if they are not already present. Later runs warm-start from the active FinFrame detector.
 
-## Important scope note
+## Data location
 
-This first version covers the single-camera annotation and MaxN workflow. True stereo 3D length/range measurement requires camera calibration, frame synchronisation and photogrammetric reconstruction, so it should be treated as a separate validated module rather than inferred from a 2D box.
+By default, Windows data is stored under `%LOCALAPPDATA%\FinFrame`:
 
-The original source video is not required for label-only COCO or YOLO exports. Every dataset includes a frame manifest with source filename, frame number, timestamp and dimensions. If **Include extracted frame images** is selected, FinFrame seeks to each labelled frame and packages a high-quality JPEG at the video's native dimensions. Extraction is entirely local; neither footage nor labels are uploaded.
+```text
+FinFrame/
+  finframe.sqlite3
+  models/
+  training/
+  exports/
+```
 
-## Class Assist
+Choose another managed location with:
 
-Class Assist is an optional local learning loop for the stage after a student draws a bounding box. It extracts a compact colour, texture and shape feature vector from verified fish crops and uses distance-weighted nearest neighbours to suggest the species of new boxes. Its learning library is separate from the currently open project, so verified examples continue to contribute after another video or project is opened.
+```powershell
+$env:FINFRAME_DATA_DIR = "D:\FinFrameData"
+python -m finframe
+```
 
-- Learning begins from manually labelled, accepted or corrected boxes while the source video is open.
-- Existing verified annotations can be added with **Learn from existing boxes**; importing a project also merges any previously extracted features into the shared library.
-- Examples are deduplicated by annotation and matched across projects using scientific name, species code and common name rather than project-specific IDs.
-- Species learned in earlier projects are restored into the current taxonomy automatically.
-- Suggestions remain pending until a student accepts the guess or chooses a different species.
-- Pending guesses are excluded from MaxN, observation CSVs, COCO labels and YOLO labels.
-- Accepted and corrected predictions become new verified training examples, allowing the assistant to improve across annotation sessions and videos.
+All videos retain their original filesystem paths. Moving a source video requires restoring it to that path or adding it to the project again. Do not place SQLite directly on an unreliable network share. Concurrent students on different computers should use a centrally deployed database/API in a future institutional deployment; the desktop database is appropriate for a workstation or single-host teaching lab.
 
-The shared library remains in browser storage and contains compact feature vectors and source metadata, not video frames. It is shared by projects opened in the same browser profile; clearing site data removes it, and it is not automatically synchronised between computers. This lightweight classifier is intended for immediate, private, in-browser assistance. It is not a replacement for training a full detector such as YOLO on aggregated exports; the export formats remain the path to a production model that can detect fish without a student first drawing a box.
+## Exports
 
-## Automatic tracking
+COCO and YOLO exports include only verified annotations. Extracted frame images are optional. When images are omitted, `metadata/frame_manifest.csv` records the source path, frame number, timestamp and dimensions for later extraction.
 
-FinFrame includes an optional local service in [tracking_service/](tracking_service/) that combines custom fish-detector weights with ByteTrack or BoT-SORT. The browser sends the open video only to `127.0.0.1`; the service removes its temporary copy after inference.
+Training, validation and test data must be split by complete deployment or video. Randomly splitting neighbouring frames causes serious data leakage.
 
-All tracker output is imported as unverified proposals. Proposed boxes and track IDs do not contribute to MaxN or released datasets until accepted or corrected. Students can accept individual boxes or all proposals on the current frame.
+See [docs/DATASET_FORMAT.md](docs/DATASET_FORMAT.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-ByteTrack is the recommended fast baseline after a fish detector has been trained. It associates detection boxes but cannot propagate a lone manually drawn box by itself. For that early annotation workflow, a future SAM 2 provider is preferable because it accepts a box prompt and propagates the object through video. See [tracking_service/README.md](tracking_service/README.md) for setup and tracker-selection guidance.
+## Tests
 
-## Machine-learning compatibility
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
 
-FinFrame treats model compatibility as a core data-contract requirement:
+## Windows application build
 
-- Bounding boxes are stored internally as normalised `x`, `y`, `width`, `height` values relative to the uncropped source frame.
-- COCO exports convert those boxes to pixel `x`, `y`, `width`, `height` coordinates and assign stable category/image/annotation IDs.
-- YOLO exports use normalised centre `x`, centre `y`, width and height coordinates with a deterministic class list.
-- Every exported image is linked to its source video, frame number, timestamp and deployment ID.
-- Track IDs, life stage, activity, uncertainty and review state are preserved in the project and COCO attributes.
-- The complete editable project is bundled with each dataset so labels remain auditable.
-- Unverified model suggestions are retained for auditing but excluded from released labels and abundance metrics.
+```powershell
+.\scripts\build_windows.ps1
+```
 
-Do not randomly split nearby frames from one video between training and validation. They are highly correlated and will inflate validation performance. Combine multiple deployment exports and split whole deployments or videos into train, validation and test groups.
+The script creates an isolated CPU-only build environment so CUDA libraries
+installed elsewhere on the workstation are not accidentally bundled. The
+portable application is created under `dist\FinFrame`. Maintainers who need a
+machine-specific NVIDIA build can pass `-UseCuda` after installing the intended
+CUDA-enabled PyTorch version in `.build-venv`.
 
-See [docs/DATASET_FORMAT.md](docs/DATASET_FORMAT.md) for the full schema and training guidance.
-The machine-readable project contract is in [schemas/finframe-project.schema.json](schemas/finframe-project.schema.json).
+## Licensing note
 
-## Suggested production architecture
-
-Keep this interaction model, then add a service layer for user accounts, project locking, cloud/object storage, dataset versioning and audit logs. For model-assisted annotation, ingest detector/tracker proposals as editable boxes and preserve both the original prediction and the student's reviewed label.
+The desktop application uses Ultralytics for detector training and tracking integration. Review Ultralytics' AGPL and enterprise licensing options before distributing FinFrame outside an environment compatible with that licence. Model weights and source videos are excluded from Git by default.

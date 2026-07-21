@@ -19,10 +19,22 @@ Thumbs.db
 *.webm
 datasets/
 exports/
+training/
+models/
 
 # Local detector weights
 *.pt
 *.onnx
-tracking_service/.venv/
+.venv/
+.build-venv/
 __pycache__/
 *.py[cod]
+
+# Desktop runtime and packaging
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+build/
+dist/
+*.spec
+*.egg-info/

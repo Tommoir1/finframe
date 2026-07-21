@@ -1,0 +1,82 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from finframe.database import Database
+
+
+class DatabaseWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp.name) / "finframe.sqlite3")
+        self.project = self.db.create_project("BRUV survey", deployment_id="D-01", observer="Student One")
+        self.video = self.db.add_video(
+            self.project["id"], Path(self.temp.name) / "survey.mp4", duration=20, width=1280, height=720, fps=25, frame_count=500
+        )
+        self.species = self.db.list_species()[:2]
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def add(self, species_index, frame, status="verified", source="manual"):
+        return self.db.add_annotation(
+            video_id=self.video["id"], frame_number=frame, time_seconds=frame / 25,
+            species_id=self.species[species_index]["id"], track_id=f"FISH-{frame}",
+            box=(0.1, 0.2, 0.2, 0.1), status=status, source=source, created_by="Student One"
+        )
+
+    def test_pending_ai_is_excluded_until_approved(self):
+        self.add(0, 10)
+        pending = self.add(0, 10, "pending", "ai")
+        self.assertEqual(self.db.frame_counts(self.video["id"], 10)[0]["count"], 1)
+        self.assertEqual(self.db.training_stats()["examples"], 1)
+        approved = self.db.review_annotation(pending["id"], "approve")
+        self.assertEqual(approved["source"], "ai_verified")
+        self.assertEqual(self.db.frame_counts(self.video["id"], 10)[0]["count"], 2)
+        self.assertEqual(self.db.training_stats()["examples"], 2)
+
+    def test_pending_review_navigation_wraps_to_first_pending_frame(self):
+        self.add(0, 20, "pending", "ai")
+        self.add(0, 40, "pending", "tracker")
+        self.assertEqual(self.db.next_pending_frame(self.video["id"], 20), 40)
+        self.assertEqual(self.db.next_pending_frame(self.video["id"], 40), 20)
+
+    def test_modified_ai_proposal_is_a_corrected_verified_label(self):
+        pending = self.add(0, 20, "pending", "ai")
+        self.db.update_annotation(pending["id"], species_id=self.species[1]["id"], width=0.25)
+        corrected = self.db.review_annotation(pending["id"], "approve")
+        self.assertEqual(corrected["source"], "ai_corrected")
+        self.assertEqual(corrected["species_id"], self.species[1]["id"])
+
+    def test_maxn_uses_verified_boxes_only(self):
+        self.add(0, 10)
+        self.add(0, 20)
+        self.add(0, 20)
+        self.add(0, 30, "pending", "tracker")
+        summary = self.db.maxn_summary(self.video["id"])
+        self.assertEqual(summary[0]["maxn"], 2)
+        self.assertEqual(summary[0]["frame_number"], 20)
+
+    def test_verified_edits_and_deletions_advance_dataset_revision(self):
+        annotation = self.add(0, 10)
+        first = self.db.training_stats()["revision"]
+        self.db.update_annotation(annotation["id"], width=0.3)
+        second = self.db.training_stats()["revision"]
+        self.db.delete_annotation(annotation["id"])
+        third = self.db.training_stats()["revision"]
+        self.assertGreater(second, first)
+        self.assertGreater(third, second)
+
+    def test_project_backup_import_adds_verified_labels_to_shared_database(self):
+        self.add(0, 10)
+        self.add(1, 20, "pending", "ai")
+        snapshot = self.db.project_snapshot(self.project["id"])
+        imported_db = Database(Path(self.temp.name) / "imported.sqlite3")
+        imported = imported_db.import_project_snapshot(snapshot)
+        self.assertEqual(imported_db.training_stats()["examples"], 1)
+        self.assertEqual(imported_db.training_stats()["pending"], 1)
+        self.assertEqual(len(imported_db.list_videos(imported["id"])), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
