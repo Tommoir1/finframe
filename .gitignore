@@ -1,0 +1,21 @@
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local servers and generated exports
+*.log
+*.zip
+*.finframe.json
+*_observations.csv
+*_per_frame_counts.csv
+
+# Source videos and extracted training images should not be committed by default
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+datasets/
+exports/

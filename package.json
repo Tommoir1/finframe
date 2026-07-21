@@ -1,0 +1,13 @@
+{
+  "name": "finframe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first underwater video annotation, MaxN analysis and ML dataset export.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

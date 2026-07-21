@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finframe.local/schemas/finframe-project.schema.json",
+  "title": "FinFrame annotation project",
+  "type": "object",
+  "required": ["schemaVersion", "project", "video", "species", "frames"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "project": {
+      "type": "object",
+      "required": ["name", "createdAt", "updatedAt"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "deploymentId": { "type": "string" },
+        "site": { "type": "string" },
+        "observer": { "type": "string" },
+        "date": { "type": "string" },
+        "depth": { "type": ["string", "number"] },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": true
+    },
+    "video": {
+      "type": "object",
+      "required": ["name", "duration", "width", "height", "fps"],
+      "properties": {
+        "name": { "type": "string" },
+        "duration": { "type": "number", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "species": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "common", "scientific", "code", "color"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "common": { "type": "string", "minLength": 1 },
+          "scientific": { "type": "string" },
+          "code": { "type": "string", "minLength": 1 },
+          "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "time", "frameNumber", "annotations", "reviewed"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "time": { "type": "number", "minimum": 0 },
+          "frameNumber": { "type": "integer", "minimum": 0 },
+          "annotations": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/annotation" }
+          },
+          "note": { "type": "string" },
+          "reviewed": { "type": "boolean" },
+          "savedAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "activeSpeciesId": { "type": "string" }
+  },
+  "$defs": {
+    "normalisedCoordinate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "annotation": {
+      "type": "object",
+      "required": ["id", "speciesId", "trackId", "x", "y", "w", "h"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "speciesId": { "type": "string", "minLength": 1 },
+        "trackId": { "type": "string", "minLength": 1 },
+        "x": { "$ref": "#/$defs/normalisedCoordinate" },
+        "y": { "$ref": "#/$defs/normalisedCoordinate" },
+        "w": { "allOf": [{ "$ref": "#/$defs/normalisedCoordinate" }, { "exclusiveMinimum": 0 }] },
+        "h": { "allOf": [{ "$ref": "#/$defs/normalisedCoordinate" }, { "exclusiveMinimum": 0 }] },
+        "stage": { "type": "string" },
+        "activity": { "type": "string" },
+        "uncertain": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
