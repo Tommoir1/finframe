@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import zipfile
@@ -8,7 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .database import Database, utc_now
+from .database import Database, new_id, utc_now
 
 
 class DatasetError(RuntimeError):
@@ -42,6 +43,8 @@ def _verified_records(db: Database, video_id: str | None = None) -> tuple[list[d
             "video_id": annotation["video_id"],
             "video_path": annotation["video_path"],
             "file_name": annotation["file_name"],
+            "media_type": annotation.get("media_type", "video"),
+            "image_path": annotation.get("image_path", ""),
             "frame_number": annotation["frame_number"],
             "time_seconds": annotation["time_seconds"],
             "width": annotation["video_width"],
@@ -58,11 +61,29 @@ def _verified_records(db: Database, video_id: str | None = None) -> tuple[list[d
     return annotations, list(frames.values())
 
 
-def _read_frame(video_path: str, frame_number: int) -> Any:
+def _read_frame(
+    video_path: str,
+    frame_number: int,
+    *,
+    media_type: str = "video",
+    image_path: str = "",
+) -> Any:
     try:
         import cv2
     except ImportError as exc:
         raise DatasetError("OpenCV is required to extract video frames") from exc
+    still_path = Path(image_path) if image_path else None
+    if still_path and still_path.is_file():
+        image = cv2.imread(str(still_path))
+        if image is None:
+            raise DatasetError(f"Could not read extracted frame: {still_path}")
+        return image
+    if media_type == "image":
+        image = cv2.imread(video_path)
+        if image is None:
+            raise DatasetError(f"Could not read source image: {video_path}")
+        return image
+
     capture = cv2.VideoCapture(video_path)
     try:
         if not capture.isOpened():
@@ -92,7 +113,12 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         if include_images:
             for frame in frames:
-                image = _read_frame(frame["video_path"], frame["frame_number"])
+                image = _read_frame(
+                    frame["video_path"],
+                    frame["frame_number"],
+                    media_type=frame["media_type"],
+                    image_path=frame["image_path"],
+                )
                 import cv2
                 ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 if not ok:
@@ -106,6 +132,7 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
                 "width": frame["width"],
                 "height": frame["height"],
                 "video_file": frame["file_name"],
+                "media_type": frame["media_type"],
                 "frame_number": frame["frame_number"],
                 "timestamp_seconds": frame["time_seconds"],
                 "deployment_id": frame["deployment_id"],
@@ -155,9 +182,9 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
             archive.writestr("data.yaml", f"path: .\ntrain: images\nval: images\nnames:\n{names}\n")
             archive.writestr("classes.txt", "\n".join(item["common_name"] for item in species))
 
-        manifest = [["image_file", "source_video", "source_path", "project", "deployment_id", "frame_number", "time_seconds", "width", "height", "image_included"]]
+        manifest = [["image_file", "source_media", "media_type", "source_path", "project", "deployment_id", "frame_number", "time_seconds", "width", "height", "image_included"]]
         for frame in frames:
-            manifest.append([_frame_name(frame), frame["file_name"], frame["video_path"], frame["project_name"], frame["deployment_id"], frame["frame_number"], frame["time_seconds"], frame["width"], frame["height"], include_images])
+            manifest.append([_frame_name(frame), frame["file_name"], frame["media_type"], frame["video_path"], frame["project_name"], frame["deployment_id"], frame["frame_number"], frame["time_seconds"], frame["width"], frame["height"], include_images])
         archive.writestr("metadata/frame_manifest.csv", _csv_bytes(manifest))
         counts: dict[tuple[str, int, str], int] = defaultdict(int)
         for annotation in annotations:
@@ -169,7 +196,7 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
         for annotation in annotations:
             species_by_video[annotation["video_id"]].add(annotation["species_id"])
         species_lookup = {item["species_id"]: item for item in annotations}
-        frame_count_rows = [["project", "deployment_id", "video", "frame_number", "time_seconds", "species_code", "common_name", "count_in_frame", "final_maxn", "is_maxn_frame", "reviewed"]]
+        frame_count_rows = [["project", "deployment_id", "media", "frame_number", "time_seconds", "species_code", "common_name", "count_in_frame", "final_maxn", "is_maxn_frame", "reviewed"]]
         for frame in frames:
             for species_id in sorted(species_by_video[frame["video_id"]], key=lambda item: species_lookup[item]["code"]):
                 species_record = species_lookup[species_id]
@@ -177,7 +204,7 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
                 maximum = maximums[(frame["video_id"], species_id)]
                 frame_count_rows.append([frame["project_name"], frame["deployment_id"], frame["file_name"], frame["frame_number"], frame["time_seconds"], species_record["code"], species_record["common_name"], count, maximum, bool(count and count == maximum), bool(frame["reviewed"])])
         archive.writestr("metadata/per_frame_counts.csv", _csv_bytes(frame_count_rows))
-        observation_rows = [["project", "deployment_id", "site", "observer", "video", "frame_number", "time_seconds", "species_code", "common_name", "scientific_name", "count_in_frame", "maxn", "is_maxn_frame", "track_id", "life_stage", "activity", "uncertain", "label_source", "created_by", "x", "y", "width", "height", "note"]]
+        observation_rows = [["project", "deployment_id", "site", "observer", "media", "frame_number", "time_seconds", "species_code", "common_name", "scientific_name", "count_in_frame", "maxn", "is_maxn_frame", "track_id", "life_stage", "activity", "uncertain", "label_source", "created_by", "x", "y", "width", "height", "note"]]
         for annotation in annotations:
             count = counts[(annotation["video_id"], annotation["frame_number"], annotation["species_id"])]
             maximum = maximums[(annotation["video_id"], annotation["species_id"])]
@@ -203,6 +230,93 @@ def export_project_backup(db: Database, project_id: str, destination: str | Path
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(db.project_snapshot(project_id), indent=2), encoding="utf-8")
     return destination
+
+
+def export_contribution_bundle(db: Database, project_id: str, destination: str | Path) -> Path:
+    """Create one transferable archive containing labels and annotated source frames."""
+    destination = Path(destination).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = db.project_snapshot(project_id)
+    if not any(frame.get("annotations") for video in snapshot["videos"] for frame in video.get("frames", [])):
+        raise DatasetError("Annotate at least one image or video frame before exporting a contribution")
+    embedded_frames = 0
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for video in snapshot["videos"]:
+            for frame in video.get("frames", []):
+                if not frame.get("annotations"):
+                    continue
+                image = _read_frame(
+                    video["path"],
+                    int(frame["frame_number"]),
+                    media_type=video.get("media_type", "video"),
+                    image_path=frame.get("image_path", ""),
+                )
+                import cv2
+                ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if not ok:
+                    raise DatasetError(f"Could not encode {video['file_name']} frame {frame['frame_number']}")
+                portable_path = f"frames/{_safe_name(video['id'])}/{int(frame['frame_number']):08d}.jpg"
+                archive.writestr(portable_path, encoded.tobytes())
+                frame["portable_image"] = portable_path
+                frame["image_path"] = ""
+                embedded_frames += 1
+        snapshot["contribution"] = {
+            "created_at": utc_now(),
+            "embedded_annotated_frames": embedded_frames,
+            "includes_full_videos": False,
+        }
+        archive.writestr("project.finframe.json", json.dumps(snapshot, indent=2))
+        archive.writestr(
+            "README.txt",
+            "FinFrame student contribution bundle\n\n"
+            "Contains project metadata, all annotation decisions, and JPEG copies of annotated frames.\n"
+            "It does not contain complete source videos. Import it into FinFrame to add verified labels to the shared training database.\n",
+        )
+    return destination
+
+
+def import_contribution_bundle(db: Database, source: str | Path, data_dir: str | Path) -> dict[str, Any]:
+    """Import a student archive and retain its embedded frames for future training."""
+    source = Path(source).expanduser().resolve()
+    hasher = hashlib.sha256()
+    with source.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
+    imported_hashes = db.get_setting("imported_contribution_hashes", [])
+    if digest in imported_hashes:
+        raise DatasetError("This contribution bundle has already been imported")
+    contribution_root = Path(data_dir).expanduser().resolve() / "contributions" / new_id("bundle")
+    contribution_root.mkdir(parents=True, exist_ok=False)
+    try:
+        with zipfile.ZipFile(source, "r") as archive:
+            try:
+                snapshot = json.loads(archive.read("project.finframe.json"))
+            except KeyError as exc:
+                raise DatasetError("The archive has no FinFrame project manifest") from exc
+            embedded_frames = 0
+            for video in snapshot.get("videos", []):
+                for frame in video.get("frames", []):
+                    portable_path = frame.get("portable_image")
+                    if not portable_path:
+                        continue
+                    try:
+                        frame_bytes = archive.read(portable_path)
+                    except KeyError as exc:
+                        raise DatasetError(f"Contribution frame is missing: {portable_path}") from exc
+                    target = contribution_root / f"{_safe_name(video.get('id', 'media'))}_{int(frame['frame_number']):08d}.jpg"
+                    target.write_bytes(frame_bytes)
+                    frame["image_path"] = str(target)
+                    embedded_frames += 1
+        project = db.import_project_snapshot(snapshot)
+        db.set_setting("imported_contribution_hashes", [*imported_hashes, digest])
+        return {"project": project, "embedded_frames": embedded_frames, "storage": contribution_root}
+    except Exception:
+        for child in contribution_root.glob("*"):
+            if child.is_file():
+                child.unlink()
+        contribution_root.rmdir()
+        raise
 
 
 def build_yolo_training_dataset(db: Database, destination: str | Path) -> dict[str, Any]:
@@ -234,7 +348,12 @@ def build_yolo_training_dataset(db: Database, destination: str | Path) -> dict[s
         image_dir, label_dir = destination / "images" / split, destination / "labels" / split
         image_dir.mkdir(parents=True, exist_ok=True)
         label_dir.mkdir(parents=True, exist_ok=True)
-        image = _read_frame(frame["video_path"], frame["frame_number"])
+        image = _read_frame(
+            frame["video_path"],
+            frame["frame_number"],
+            media_type=frame["media_type"],
+            image_path=frame["image_path"],
+        )
         import cv2
         image_path = image_dir / _frame_name(frame)
         if not cv2.imwrite(str(image_path), image):

@@ -71,6 +71,7 @@ class Database:
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                     path TEXT NOT NULL,
                     file_name TEXT NOT NULL,
+                    media_type TEXT NOT NULL DEFAULT 'video',
                     duration REAL NOT NULL DEFAULT 0,
                     width INTEGER NOT NULL DEFAULT 0,
                     height INTEGER NOT NULL DEFAULT 0,
@@ -96,6 +97,7 @@ class Database:
                     time_seconds REAL NOT NULL,
                     reviewed INTEGER NOT NULL DEFAULT 0,
                     note TEXT NOT NULL DEFAULT '',
+                    image_path TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
                     UNIQUE(video_id, frame_number)
                 );
@@ -159,6 +161,12 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_annotations_species_status ON annotations(species_id, status);
                 """
             )
+            video_columns = {row[1] for row in db.execute("PRAGMA table_info(videos)")}
+            if "media_type" not in video_columns:
+                db.execute("ALTER TABLE videos ADD COLUMN media_type TEXT NOT NULL DEFAULT 'video'")
+            frame_columns = {row[1] for row in db.execute("PRAGMA table_info(frames)")}
+            if "image_path" not in frame_columns:
+                db.execute("ALTER TABLE frames ADD COLUMN image_path TEXT NOT NULL DEFAULT ''")
             for common, scientific, code, color in STARTER_SPECIES:
                 db.execute(
                     "INSERT OR IGNORE INTO species(id, common_name, scientific_name, code, color, created_at) VALUES(?,?,?,?,?,?)",
@@ -218,7 +226,20 @@ class Database:
         with self.connect() as db:
             db.execute(f"UPDATE projects SET {assignments} WHERE id=?", (*values.values(), project_id))
 
-    def add_video(self, project_id: str, path: str | Path, *, duration: float, width: int, height: int, fps: float, frame_count: int) -> dict[str, Any]:
+    def add_video(
+        self,
+        project_id: str,
+        path: str | Path,
+        *,
+        duration: float,
+        width: int,
+        height: int,
+        fps: float,
+        frame_count: int,
+        media_type: str = "video",
+    ) -> dict[str, Any]:
+        if media_type not in {"video", "image"}:
+            raise ValueError("media_type must be video or image")
         resolved = str(Path(path).expanduser().resolve())
         with self.connect() as db:
             existing = db.execute("SELECT * FROM videos WHERE project_id=? AND path=?", (project_id, resolved)).fetchone()
@@ -226,9 +247,9 @@ class Database:
                 return dict(existing)
             video_id = new_id("video")
             db.execute(
-                """INSERT INTO videos(id,project_id,path,file_name,duration,width,height,fps,frame_count,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (video_id, project_id, resolved, Path(resolved).name, duration, width, height, fps, frame_count, utc_now()),
+                """INSERT INTO videos(id,project_id,path,file_name,media_type,duration,width,height,fps,frame_count,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (video_id, project_id, resolved, Path(resolved).name, media_type, duration, width, height, fps, frame_count, utc_now()),
             )
         return self.get_video(video_id)
 
@@ -299,6 +320,13 @@ class Database:
         if row is None:
             raise KeyError(f"Unknown frame {video_id}:{frame_number}")
         return dict(row)
+
+    def frames_for_video(self, video_id: str) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return self._rows(db.execute(
+                "SELECT * FROM frames WHERE video_id=? ORDER BY frame_number",
+                (video_id,),
+            ))
 
     def add_annotation(
         self,
@@ -420,12 +448,22 @@ class Database:
             cursor = db.execute(query, params)
             return cursor.rowcount
 
-    def update_frame(self, video_id: str, frame_number: int, *, reviewed: bool | None = None, note: str | None = None) -> None:
+    def update_frame(
+        self,
+        video_id: str,
+        frame_number: int,
+        *,
+        reviewed: bool | None = None,
+        note: str | None = None,
+        image_path: str | Path | None = None,
+    ) -> None:
         values: dict[str, Any] = {}
         if reviewed is not None:
             values["reviewed"] = int(reviewed)
         if note is not None:
             values["note"] = note
+        if image_path is not None:
+            values["image_path"] = str(Path(image_path).expanduser().resolve()) if str(image_path) else ""
         if not values:
             return
         values["updated_at"] = utc_now()
@@ -481,7 +519,8 @@ class Database:
 
     def verified_annotations(self, video_id: str | None = None) -> list[dict[str, Any]]:
         query = """SELECT a.*,s.common_name,s.scientific_name,s.code,s.color,
-                          f.video_id,f.frame_number,f.time_seconds,f.reviewed,f.note,v.path AS video_path,v.file_name,v.width AS video_width,v.height AS video_height,v.fps,
+                          f.video_id,f.frame_number,f.time_seconds,f.reviewed,f.note,f.image_path,
+                          v.path AS video_path,v.file_name,v.media_type,v.width AS video_width,v.height AS video_height,v.fps,
                           p.id AS project_id,p.name AS project_name,p.deployment_id,p.site,p.observer
                    FROM annotations a
                    JOIN species s ON s.id=a.species_id
@@ -501,7 +540,7 @@ class Database:
         condition = "a.status='verified'" if verified_only else "a.status!='rejected'"
         with self.connect() as db:
             return self._rows(db.execute(
-                f"""SELECT DISTINCT f.*,v.path AS video_path,v.file_name,v.width AS video_width,v.height AS video_height,v.fps,
+                f"""SELECT DISTINCT f.*,v.path AS video_path,v.file_name,v.media_type,v.width AS video_width,v.height AS video_height,v.fps,
                             v.project_id,p.deployment_id,p.name AS project_name
                      FROM frames f JOIN annotations a ON a.frame_id=f.id JOIN videos v ON v.id=f.video_id JOIN projects p ON p.id=v.project_id
                      WHERE {condition} ORDER BY v.id,f.frame_number"""
@@ -680,6 +719,7 @@ class Database:
                 height=int(source_video.get("height", 0)),
                 fps=float(source_video.get("fps", 25)),
                 frame_count=int(source_video.get("frame_count", 0)),
+                media_type=source_video.get("media_type", "video"),
             )
             for source_frame in source_video.get("frames", []):
                 frame_number = int(source_frame["frame_number"])
@@ -704,5 +744,11 @@ class Database:
                         activity=source_annotation.get("activity", "Passing"),
                         uncertain=bool(source_annotation.get("uncertain", False)),
                     )
-                self.update_frame(video["id"], frame_number, reviewed=bool(source_frame.get("reviewed", False)), note=source_frame.get("note", ""))
+                self.update_frame(
+                    video["id"],
+                    frame_number,
+                    reviewed=bool(source_frame.get("reviewed", False)),
+                    note=source_frame.get("note", ""),
+                    image_path=source_frame.get("image_path", ""),
+                )
         return project

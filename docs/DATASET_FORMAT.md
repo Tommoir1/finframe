@@ -56,11 +56,23 @@ metadata/verified_annotations.json
 README.txt
 ```
 
-The frame manifest always records the source video path, project, deployment, frame number, timestamp and dimensions. Label-only archives therefore remain extractable later when the original videos are available.
+The frame manifest always records the source media path, project, deployment, frame number, timestamp and dimensions. Label-only archives therefore remain extractable later when the original images or videos are available.
+
+## Student contribution bundles
+
+The portable cohort format is one `.finframe.zip` per student project:
+
+```text
+project.finframe.json          # taxonomy, media metadata and every review decision
+frames/<media-id>/*.jpg        # only frames/images that have annotations
+README.txt
+```
+
+Complete videos are deliberately omitted. On import, embedded frames are copied under the receiving installation's `contributions/` directory and their paths are registered in SQLite. Verified annotations can therefore train immediately without the student's original media. Pending and rejected records are also retained for audit/review, but remain excluded from training. A SHA-256 bundle fingerprint prevents accidental duplicate imports.
 
 ## Training snapshots
 
-Automatic training rebuilds a YOLO dataset from every verified annotation in the database. With two or more videos, whole videos form the validation group. With only one video, FinFrame creates a temporal holdout and records that the metric is preliminary.
+Automatic training rebuilds a YOLO dataset from every verified annotation in the database, including still images and embedded contribution frames. With two or more independent media sources, complete sources form the validation group. With only one video, FinFrame creates a temporal holdout and records that the metric is preliminary.
 
 Each training run stores:
 

@@ -5,7 +5,13 @@ import zipfile
 from pathlib import Path
 
 from finframe.database import Database
-from finframe.dataset import build_yolo_training_dataset, export_dataset
+from finframe.dataset import (
+    DatasetError,
+    build_yolo_training_dataset,
+    export_contribution_bundle,
+    export_dataset,
+    import_contribution_bundle,
+)
 
 
 class DatasetExportTests(unittest.TestCase):
@@ -73,6 +79,46 @@ class DatasetExportTests(unittest.TestCase):
         self.assertEqual(result["frames"], 2)
         self.assertEqual(result["split"], {"train": 1, "val": 1})
         self.assertTrue(result["yaml"].is_file())
+
+    def test_portable_contribution_combines_image_labels_without_original_files(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest("OpenCV training dependencies are not installed")
+        project = self.db.get_project(self.video["project_id"])
+        source_images = []
+        for index in range(2):
+            path = self.root / f"student_image_{index}.jpg"
+            cv2.imwrite(str(path), np.full((40, 80, 3), 50 + index * 50, dtype=np.uint8))
+            media = self.db.add_video(
+                project["id"], path, duration=0, width=80, height=40,
+                fps=1, frame_count=1, media_type="image"
+            )
+            self.db.add_annotation(
+                video_id=media["id"], frame_number=0, time_seconds=0,
+                species_id=self.species["id"], track_id=f"IMAGE-{index + 1:03d}",
+                box=(.1, .1, .3, .3), status="verified", source="manual"
+            )
+            source_images.append(path)
+
+        bundle = export_contribution_bundle(self.db, project["id"], self.root / "student.finframe.zip")
+        with zipfile.ZipFile(bundle) as archive:
+            self.assertIn("project.finframe.json", archive.namelist())
+            self.assertEqual(len([name for name in archive.namelist() if name.startswith("frames/")]), 2)
+        for path in source_images:
+            path.unlink()
+
+        combined_root = self.root / "combined"
+        combined_db = Database(combined_root / "finframe.sqlite3")
+        imported = import_contribution_bundle(combined_db, bundle, combined_root)
+        self.assertEqual(imported["embedded_frames"], 2)
+        self.assertEqual(combined_db.training_stats()["examples"], 2)
+        result = build_yolo_training_dataset(combined_db, combined_root / "training_dataset")
+        self.assertEqual(result["frames"], 2)
+        self.assertEqual(result["split"], {"train": 1, "val": 1})
+        with self.assertRaises(DatasetError):
+            import_contribution_bundle(combined_db, bundle, combined_root)
 
 
 if __name__ == "__main__":

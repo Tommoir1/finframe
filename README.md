@@ -6,24 +6,26 @@ The application is local-first. Video remains on the workstation, while projects
 
 ## Student workflow
 
-1. Create a survey project and record deployment, site and observer metadata.
-2. Add one or more source videos.
-3. Select a species and draw a box around every visible fish on an observation frame.
-4. Press Play. Every drawn box seeds a CPU tracker by default and is propagated through consecutive frames.
-5. FinFrame immediately calculates verified per-frame counts and per-species MaxN.
-6. Manual boxes enter the shared training dataset as verified labels.
-7. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
-8. A student must approve, correct or reject every proposal.
-9. Only approved or corrected proposals enter MaxN, exports and retraining.
+1. Choose **Annotate video**, **Annotate images**, or **Open existing project** at startup.
+2. Create a survey project and record deployment, site and observer metadata.
+3. Add one or more source videos or still images.
+4. Select a species and draw a box around every visible fish on an observation frame or image.
+5. For video, optionally choose 0.5× through 6× playback and press Play. Every drawn box seeds a CPU tracker by default.
+6. FinFrame immediately calculates verified per-frame counts and per-species MaxN.
+7. Manual boxes enter the shared training dataset as verified labels.
+8. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
+9. A student must approve, correct or reject every proposal.
+10. Only approved or corrected proposals enter MaxN, exports and retraining.
 
-All projects in the database contribute to training. Opening another video does not discard earlier annotations.
+All projects in the database contribute to training. Opening another image or video does not discard earlier annotations.
 
-Project backups can be imported into another FinFrame installation. This provides a practical collection workflow for a teaching cohort: students submit `.finframe.json` backups, and an instructor imports them into the training workstation. Verified labels retain observer attribution and pending proposals remain pending. If source paths differ on the training workstation, selecting a missing video opens a relink workflow before frame extraction or training.
+For a teaching cohort, each student exports one `.finframe.zip` contribution. It contains the project metadata, every annotation decision and JPEG copies of annotated frames, but not complete source videos. An instructor can batch-import many contributions into one FinFrame installation; verified labels retain observer attribution, pending proposals remain pending, duplicate bundles are rejected, and the embedded frames remain available for training without relinking the students' source files.
 
 ## Desktop features
 
 - Native PySide6 desktop interface; no browser or separate local web server
-- OpenCV video playback, timeline seeking, frame stepping and five-second jumps
+- First-class still-image annotation and multi-image import
+- OpenCV video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
 - Default box-seeded propagation during playback, with corrected boxes re-seeding the tracker
 - Shared species taxonomy, scientific names, stable codes and track IDs
@@ -36,6 +38,8 @@ Project backups can be imported into another FinFrame installation. This provide
 - COCO and YOLO exports across every verified project
 - Optional extraction of native-resolution labelled JPEG frames
 - Project JSON backups and label-only exports with frame manifests
+- Portable `.finframe.zip` student contributions and batch instructor import
+- Duplicate-contribution protection in the combined training database
 - Automatic detector retraining and model versioning
 
 ## Approval and dataset safety
@@ -60,7 +64,7 @@ The default policy checks for retraining after every **10 verified dataset chang
 - a verified class or geometry correction
 - deletion of an incorrect verified box
 
-Training starts after at least 20 verified boxes across at least two species. Every run rebuilds the detector dataset from all verified annotations across all projects and videos. Pending predictions cannot reinforce themselves.
+Training starts after at least 20 verified boxes across at least two species. Every run rebuilds the detector dataset from all verified annotations across all projects, images and videos. Pending predictions cannot reinforce themselves.
 
 Each candidate is evaluated on held-out data. The current model remains active unless the candidate meets the configured mAP50-95 improvement gate. When at least two videos exist, complete videos are held out; a one-video temporal split is marked as preliminary.
 
@@ -85,6 +89,7 @@ By default, Windows data is stored under `%LOCALAPPDATA%\FinFrame`:
 ```text
 FinFrame/
   finframe.sqlite3
+  contributions/
   models/
   training/
   exports/
@@ -97,11 +102,13 @@ $env:FINFRAME_DATA_DIR = "D:\FinFrameData"
 python -m finframe
 ```
 
-All videos retain their original filesystem paths. Moving a source video requires restoring it to that path or adding it to the project again. Do not place SQLite directly on an unreliable network share. Concurrent students on different computers should use a centrally deployed database/API in a future institutional deployment; the desktop database is appropriate for a workstation or single-host teaching lab.
+Original images and videos retain their filesystem paths. Imported contribution frames are copied under `contributions/`, inside the same FinFrame data directory as the database. Moving an original source requires relinking it, but imported contribution bundles remain self-contained for training. Do not place SQLite directly on an unreliable network share. Concurrent students on different computers should use contribution bundles or a centrally deployed database/API rather than sharing the SQLite file.
 
 ## Exports
 
 COCO and YOLO exports include only verified annotations. Extracted frame images are optional. When images are omitted, `metadata/frame_manifest.csv` records the source path, frame number, timestamp and dimensions for later extraction.
+
+The **Export contribution** action serves a different purpose: it always embeds the annotated frames plus all verified, pending and rejected decisions needed to reproduce the student's review state. The receiving instructor can select multiple contribution files in one import operation.
 
 Training, validation and test data must be split by complete deployment or video. Randomly splitting neighbouring frames causes serious data leakage.
 

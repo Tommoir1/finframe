@@ -8,6 +8,15 @@
     "schemaVersion": { "const": "2.0" },
     "project": { "$ref": "#/$defs/project" },
     "species": { "type": "array", "items": { "$ref": "#/$defs/species" } },
+    "contribution": {
+      "type": "object",
+      "properties": {
+        "created_at": { "type": "string", "format": "date-time" },
+        "embedded_annotated_frames": { "type": "integer", "minimum": 0 },
+        "includes_full_videos": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "videos": {
       "type": "array",
       "items": {
@@ -64,6 +73,7 @@
         "project_id": { "type": "string" },
         "path": { "type": "string" },
         "file_name": { "type": "string" },
+        "media_type": { "enum": ["video", "image"] },
         "duration": { "type": "number", "minimum": 0 },
         "width": { "type": "integer", "minimum": 0 },
         "height": { "type": "integer", "minimum": 0 },
@@ -84,6 +94,8 @@
         "time_seconds": { "type": "number", "minimum": 0 },
         "reviewed": { "type": "integer", "minimum": 0, "maximum": 1 },
         "note": { "type": "string" },
+        "image_path": { "type": "string" },
+        "portable_image": { "type": "string" },
         "updated_at": { "type": "string", "format": "date-time" },
         "annotations": { "type": "array", "items": { "$ref": "#/$defs/annotation" } }
       },

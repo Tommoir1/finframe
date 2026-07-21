@@ -3,18 +3,19 @@
 ```text
 PySide6 student interface
         |
-        +-- OpenCV video/frame reader
+        +-- OpenCV image/video/frame reader and 0.5×–6× playback
         +-- Default box-seeded CSRT/KCF/MIL propagation
         +-- SQLite project and annotation repository
         +-- Verified-only MaxN queries
         +-- COCO/YOLO/CSV dataset services
+        +-- Portable contribution bundle exporter/importer
         +-- Ultralytics detector training
         +-- ByteTrack / BoT-SORT inference
 ```
 
 ## Persistent data
 
-SQLite is the source of truth for projects, videos, species, frames, annotations, training runs, model versions and application settings. Source videos remain external files and are addressed by absolute path.
+SQLite is the source of truth for projects, image/video media, species, frames, annotations, training runs, model versions and application settings. Original source media remain external files. Frames arriving in student contribution bundles are copied into managed storage under the receiving FinFrame data directory.
 
 All database methods use short independent connections with foreign keys, WAL mode and a busy timeout. This supports UI and background-training threads within one workstation process.
 
@@ -43,4 +44,4 @@ Track IDs represent uninterrupted visibility only. If the last visible box touch
 
 ## Institutional deployment
 
-The included repository is a single-host desktop database. A multi-computer deployment should keep the same service interfaces but replace direct SQLite access with an authenticated API backed by PostgreSQL and managed object storage. Direct SQLite access over SMB/NFS is not recommended.
+Students on separate computers should export `.finframe.zip` contributions and the instructor should batch-import them into the training workstation. The included repository remains a single-host desktop database. A simultaneous multi-computer deployment should keep the same service interfaces but replace direct SQLite access with an authenticated API backed by PostgreSQL and managed object storage. Direct SQLite access over SMB/NFS is not recommended.

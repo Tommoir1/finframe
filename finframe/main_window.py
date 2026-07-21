@@ -44,7 +44,13 @@ from PySide6.QtWidgets import (
 
 from .canvas import AnnotationCanvas
 from .database import Database
-from .dataset import DatasetError, export_dataset, export_project_backup
+from .dataset import (
+    DatasetError,
+    export_contribution_bundle,
+    export_dataset,
+    export_project_backup,
+    import_contribution_bundle,
+)
 from .inference import InferenceEngine, InferenceError
 from .seed_tracking import SeedTrackingSession, SeedTrackingUnavailable
 from .training import TrainingCoordinator
@@ -149,7 +155,7 @@ class TrackingWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db: Database, data_dir: Path):
+    def __init__(self, db: Database, data_dir: Path, *, show_startup_prompt: bool = True):
         super().__init__()
         self.db = db
         self.data_dir = data_dir
@@ -171,6 +177,8 @@ class MainWindow(QMainWindow):
         self.training_timer = QTimer(self)
         self.training_timer.timeout.connect(self.refresh_training_status)
         self.training_timer.start(1000)
+        if show_startup_prompt:
+            QTimer.singleShot(0, self.choose_startup_task)
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("Project")
@@ -188,7 +196,7 @@ class MainWindow(QMainWindow):
         edit_project.triggered.connect(self.edit_project)
         toolbar.addAction(edit_project)
         toolbar.addSeparator()
-        toolbar.addWidget(QLabel("  Video  "))
+        toolbar.addWidget(QLabel("  Media  "))
         self.video_combo = QComboBox()
         self.video_combo.setMinimumWidth(300)
         self.video_combo.currentIndexChanged.connect(self.video_changed)
@@ -196,9 +204,15 @@ class MainWindow(QMainWindow):
         add_video = QAction("Add video", self)
         add_video.triggered.connect(self.add_video)
         toolbar.addAction(add_video)
+        add_images = QAction("Add images", self)
+        add_images.triggered.connect(self.add_images)
+        toolbar.addAction(add_images)
         backup = QAction("Backup project", self)
         backup.triggered.connect(self.backup_project)
         toolbar.addAction(backup)
+        contribution = QAction("Export contribution", self)
+        contribution.triggered.connect(self.export_contribution)
+        toolbar.addAction(contribution)
         restore = QAction("Import project", self)
         restore.triggered.connect(self.import_project)
         toolbar.addAction(restore)
@@ -234,19 +248,26 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         self.play_button = QPushButton("▶")
         self.play_button.clicked.connect(self.toggle_playback)
-        previous = QPushButton("◀ Frame")
-        previous.clicked.connect(lambda: self.seek_frame(self.current_frame - 1))
-        following = QPushButton("Frame ▶")
-        following.clicked.connect(lambda: self.seek_frame(self.current_frame + 1))
-        back = QPushButton("−5 s")
-        back.clicked.connect(lambda: self.seek_frame(self.current_frame - round(self._fps() * 5)))
-        forward = QPushButton("+5 s")
-        forward.clicked.connect(lambda: self.seek_frame(self.current_frame + round(self._fps() * 5)))
+        self.previous_button = QPushButton("◀ Frame")
+        self.previous_button.clicked.connect(lambda: self.seek_frame(self.current_frame - 1))
+        self.following_button = QPushButton("Frame ▶")
+        self.following_button.clicked.connect(lambda: self.seek_frame(self.current_frame + 1))
+        self.back_button = QPushButton("−5 s")
+        self.back_button.clicked.connect(lambda: self.seek_frame(self.current_frame - round(self._fps() * 5)))
+        self.forward_button = QPushButton("+5 s")
+        self.forward_button.clicked.connect(lambda: self.seek_frame(self.current_frame + round(self._fps() * 5)))
         self.timeline = QSlider(Qt.Orientation.Horizontal)
         self.timeline.valueChanged.connect(self.seek_frame)
         self.frame_label = QLabel("Frame 0 · 00:00.000")
-        for widget in (self.play_button, previous, following, back, forward):
+        for widget in (self.play_button, self.previous_button, self.following_button, self.back_button, self.forward_button):
             controls.addWidget(widget)
+        controls.addWidget(QLabel("Speed"))
+        self.playback_speed = QComboBox()
+        for speed in (0.5, 1, 1.5, 2, 3, 4, 5, 6):
+            self.playback_speed.addItem(f"{speed:g}×", speed)
+        self.playback_speed.setCurrentIndex(self.playback_speed.findData(1))
+        self.playback_speed.currentIndexChanged.connect(self.playback_speed_changed)
+        controls.addWidget(self.playback_speed)
         controls.addWidget(self.timeline, 1)
         controls.addWidget(self.frame_label)
         video_layout.addLayout(controls)
@@ -333,7 +354,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.maxn_table, "MaxN summary")
         dataset_tab = QWidget()
         dataset_layout = QVBoxLayout(dataset_tab)
-        self.dataset_stats = QLabel("0 verified boxes · 0 videos · 0 pending proposals")
+        self.dataset_stats = QLabel("0 verified boxes · 0 media sources · 0 pending proposals")
         export_row = QHBoxLayout()
         export_coco = QPushButton("Export all verified data · COCO")
         export_coco.clicked.connect(lambda: self.export_training_data("coco"))
@@ -407,6 +428,43 @@ class MainWindow(QMainWindow):
         hours, minutes = divmod(int(minutes), 60)
         return f"{hours:02d}:{minutes:02d}:{second:06.3f}" if hours else f"{minutes:02d}:{second:06.3f}"
 
+    def choose_startup_task(self) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Start annotating")
+        dialog.setText("What would you like to annotate?")
+        dialog.setInformativeText("Images and videos contribute verified boxes to the same shared training dataset.")
+        video_button = dialog.addButton("Annotate video", QMessageBox.ButtonRole.ActionRole)
+        image_button = dialog.addButton("Annotate images", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton("Open existing project", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        selected = dialog.clickedButton()
+        if selected not in {video_button, image_button}:
+            return
+        if not self._ensure_current_project():
+            return
+        if selected is image_button:
+            self.add_images()
+        else:
+            self.add_video()
+
+    def _ensure_current_project(self) -> bool:
+        if self.current_project:
+            return True
+        projects = self.db.list_projects()
+        if projects:
+            choices = ["Create a new project", *(project["name"] for project in projects)]
+            choice, accepted = QInputDialog.getItem(self, "Choose project", "Add media to", choices, 0, False)
+            if not accepted:
+                return False
+            if choice == choices[0]:
+                self.create_project()
+            else:
+                selected = projects[choices.index(choice) - 1]
+                self.refresh_projects(selected["id"])
+        else:
+            self.create_project()
+        return self.current_project is not None
+
     def refresh_projects(self, select_id: str | None = None) -> None:
         projects = self.db.list_projects()
         with QSignalBlocker(self.project_combo):
@@ -454,9 +512,10 @@ class MainWindow(QMainWindow):
         videos = self.db.list_videos(self.current_project["id"]) if self.current_project else []
         with QSignalBlocker(self.video_combo):
             self.video_combo.clear()
-            self.video_combo.addItem("Select a video…", None)
+            self.video_combo.addItem("Select media…", None)
             for video in videos:
-                self.video_combo.addItem(video["file_name"], video["id"])
+                kind = "Image" if video.get("media_type") == "image" else "Video"
+                self.video_combo.addItem(f"[{kind}] {video['file_name']}", video["id"])
             if select_id:
                 self.video_combo.setCurrentIndex(max(0, self.video_combo.findData(select_id)))
         if select_id:
@@ -481,50 +540,160 @@ class MainWindow(QMainWindow):
         video = self.db.add_video(self.current_project["id"], path, duration=frames / max(0.001, fps), width=width, height=height, fps=fps, frame_count=frames)
         self.refresh_videos(video["id"])
 
+    def add_images(self) -> None:
+        if not self.current_project:
+            QMessageBox.information(self, "Create a project", "Create or select a survey project before adding images.")
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Open survey images",
+            "",
+            "Image files (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp)",
+        )
+        if not paths:
+            return
+        last_id = None
+        unreadable = []
+        for path in paths:
+            image = cv2.imread(path)
+            if image is None:
+                unreadable.append(Path(path).name)
+                continue
+            height, width = image.shape[:2]
+            media = self.db.add_video(
+                self.current_project["id"],
+                path,
+                duration=0,
+                width=width,
+                height=height,
+                fps=1,
+                frame_count=1,
+                media_type="image",
+            )
+            self.db.ensure_frame(media["id"], 0, 0)
+            self.db.update_frame(media["id"], 0, image_path=path)
+            last_id = media["id"]
+        if last_id:
+            self.refresh_videos(last_id)
+        if unreadable:
+            QMessageBox.warning(self, "Some images were skipped", "OpenCV could not read:\n" + "\n".join(unreadable))
+
     def video_changed(self, index: int) -> None:
         video_id = self.video_combo.itemData(index)
         if not video_id:
             return
         video = self.db.get_video(video_id)
-        if not Path(video["path"]).is_file():
-            if QMessageBox.question(self, "Video missing", f"The source video is unavailable at:\n{video['path']}\n\nRelink it now?") != QMessageBox.StandardButton.Yes:
+        stored_frames = [
+            frame for frame in self.db.frames_for_video(video_id)
+            if frame.get("image_path") and Path(frame["image_path"]).is_file()
+        ]
+        source_available = Path(video["path"]).is_file()
+        if not source_available and not stored_frames:
+            media_name = "image" if video.get("media_type") == "image" else "video"
+            if QMessageBox.question(
+                self,
+                f"Source {media_name} missing",
+                f"The source {media_name} is unavailable at:\n{video['path']}\n\nRelink it now?",
+            ) != QMessageBox.StandardButton.Yes:
                 return
-            replacement, _ = QFileDialog.getOpenFileName(self, "Relink source video", "", "Video files (*.mp4 *.mov *.avi *.mkv *.webm *.m4v)")
+            file_filter = (
+                "Image files (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp)"
+                if media_name == "image"
+                else "Video files (*.mp4 *.mov *.avi *.mkv *.webm *.m4v)"
+            )
+            replacement, _ = QFileDialog.getOpenFileName(self, f"Relink source {media_name}", "", file_filter)
             if not replacement:
                 return
-            metadata = cv2.VideoCapture(replacement)
-            if not metadata.isOpened():
-                QMessageBox.warning(self, "Video error", "OpenCV could not read the replacement video.")
-                return
-            fps = float(metadata.get(cv2.CAP_PROP_FPS) or video["fps"])
-            frames = int(metadata.get(cv2.CAP_PROP_FRAME_COUNT) or video["frame_count"])
-            width = int(metadata.get(cv2.CAP_PROP_FRAME_WIDTH) or video["width"])
-            height = int(metadata.get(cv2.CAP_PROP_FRAME_HEIGHT) or video["height"])
-            metadata.release()
-            video = self.db.relink_video(video_id, replacement, duration=frames / max(0.001, fps), width=width, height=height, fps=fps, frame_count=frames)
+            if media_name == "image":
+                image = cv2.imread(replacement)
+                if image is None:
+                    QMessageBox.warning(self, "Image error", "OpenCV could not read the replacement image.")
+                    return
+                height, width = image.shape[:2]
+                video = self.db.relink_video(video_id, replacement, duration=0, width=width, height=height, fps=1, frame_count=1)
+            else:
+                metadata = cv2.VideoCapture(replacement)
+                if not metadata.isOpened():
+                    QMessageBox.warning(self, "Video error", "OpenCV could not read the replacement video.")
+                    return
+                fps = float(metadata.get(cv2.CAP_PROP_FPS) or video["fps"])
+                frames = int(metadata.get(cv2.CAP_PROP_FRAME_COUNT) or video["frame_count"])
+                width = int(metadata.get(cv2.CAP_PROP_FRAME_WIDTH) or video["width"])
+                height = int(metadata.get(cv2.CAP_PROP_FRAME_HEIGHT) or video["height"])
+                metadata.release()
+                video = self.db.relink_video(video_id, replacement, duration=frames / max(0.001, fps), width=width, height=height, fps=fps, frame_count=frames)
+            source_available = True
         if self.capture:
             self.capture.release()
         self.seed_tracking.clear()
         self._refresh_seed_tracking_status()
-        self.capture = cv2.VideoCapture(video["path"])
+        self.capture = (
+            cv2.VideoCapture(video["path"])
+            if video.get("media_type") == "video" and source_available
+            else None
+        )
         self.current_video = video
         self.timeline.setRange(0, max(0, int(video["frame_count"]) - 1))
-        self.seek_frame(0)
-        self.statusBar().showMessage(f"Opened {video['file_name']} · {video['width']}×{video['height']} · {video['fps']:.2f} fps")
+        start_frame = int(stored_frames[0]["frame_number"]) if not source_available and stored_frames else 0
+        self.seek_frame(start_frame)
+        self._configure_media_controls()
+        kind = "image" if video.get("media_type") == "image" else "video"
+        detail = "still image" if kind == "image" else f"{video['fps']:.2f} fps"
+        self.statusBar().showMessage(f"Opened {kind} {video['file_name']} · {video['width']}×{video['height']} · {detail}")
+
+    def _configure_media_controls(self) -> None:
+        playable = bool(
+            self.current_video
+            and self.current_video.get("media_type") == "video"
+            and self.capture
+            and self.capture.isOpened()
+        )
+        for control in (
+            self.play_button,
+            self.previous_button,
+            self.following_button,
+            self.back_button,
+            self.forward_button,
+            self.playback_speed,
+            self.timeline,
+            self.seed_tracking_checkbox,
+            self.byte_button,
+            self.bot_button,
+        ):
+            control.setEnabled(playable)
 
     def seek_frame(self, frame_number: int, propagate_seeded: bool = False) -> None:
-        if not self.capture or not self.current_video:
+        if not self.current_video:
             return
         frame_number = max(0, min(int(self.current_video["frame_count"]) - 1, int(frame_number)))
         previous_frame = self.current_frame
         if not propagate_seeded and self.current_image is not None and frame_number != previous_frame:
             self.seed_tracking.clear()
             self._refresh_seed_tracking_status("Propagation stopped after seeking")
-        self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        ok, image = self.capture.read()
-        if not ok:
+        image = None
+        if self.current_video.get("media_type") == "image":
+            try:
+                frame = self.db.get_frame(self.current_video["id"], 0)
+            except KeyError:
+                frame = {}
+            source = frame.get("image_path") if frame.get("image_path") and Path(frame["image_path"]).is_file() else self.current_video["path"]
+            image = cv2.imread(source)
+        elif self.capture and self.capture.isOpened():
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ok, image = self.capture.read()
+            if not ok:
+                image = None
+        else:
+            try:
+                frame = self.db.get_frame(self.current_video["id"], frame_number)
+            except KeyError:
+                frame = {}
+            if frame.get("image_path") and Path(frame["image_path"]).is_file():
+                image = cv2.imread(frame["image_path"])
+        if image is None:
             self.play_timer.stop()
             self.play_button.setText("▶")
+            self.statusBar().showMessage("This frame is unavailable; relink the full source video to browse unannotated frames", 8000)
             return
         self.current_frame = frame_number
         self.current_image = image
@@ -541,7 +710,7 @@ class MainWindow(QMainWindow):
         self.refresh_frame_annotations()
 
     def advance_playback(self) -> None:
-        if not self.current_video:
+        if not self.current_video or self.current_video.get("media_type") != "video":
             return
         if self.current_frame >= int(self.current_video["frame_count"]) - 1:
             self.play_timer.stop()
@@ -553,7 +722,7 @@ class MainWindow(QMainWindow):
         )
 
     def toggle_playback(self) -> None:
-        if not self.current_video:
+        if not self.current_video or self.current_video.get("media_type") != "video" or not self.capture:
             return
         if self.play_timer.isActive():
             self.play_timer.stop()
@@ -561,8 +730,18 @@ class MainWindow(QMainWindow):
         else:
             if self.seed_tracking_checkbox.isChecked():
                 self._seed_current_frame_annotations()
-            self.play_timer.start(max(10, round(1000 / max(1.0, self._fps()))))
+            self.play_timer.start(self._playback_interval())
             self.play_button.setText("Ⅱ")
+
+    def _playback_interval(self) -> int:
+        speed = float(self.playback_speed.currentData() or 1)
+        return max(1, round(1000 / max(1.0, self._fps() * speed)))
+
+    def playback_speed_changed(self) -> None:
+        if self.play_timer.isActive():
+            self.play_timer.start(self._playback_interval())
+        speed = float(self.playback_speed.currentData() or 1)
+        self.statusBar().showMessage(f"Playback speed set to {speed:g}×", 3000)
 
     def seed_tracking_toggled(self, enabled: bool) -> None:
         if not enabled:
@@ -583,7 +762,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(message, 5000)
 
     def _seed_annotation(self, annotation: dict[str, Any]) -> None:
-        if not self.seed_tracking_checkbox.isChecked() or self.current_image is None:
+        if (
+            not self.seed_tracking_checkbox.isChecked()
+            or self.current_image is None
+            or not self.current_video
+            or self.current_video.get("media_type") != "video"
+        ):
             return
         if int(annotation["frame_number"]) != self.current_frame:
             return
@@ -826,7 +1010,7 @@ class MainWindow(QMainWindow):
             return
         frame_number = self.db.next_pending_frame(self.current_video["id"], self.current_frame)
         if frame_number is None:
-            self.statusBar().showMessage("No pending proposals remain in this video", 5000)
+            self.statusBar().showMessage("No pending proposals remain in this media source", 5000)
             return
         self.seek_frame(frame_number)
 
@@ -884,7 +1068,7 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     def start_tracking(self, tracker: str) -> None:
-        if not self.current_video:
+        if not self.current_video or self.current_video.get("media_type") != "video":
             return
         if self.tracking_worker and self.tracking_worker.isRunning():
             QMessageBox.information(self, "Tracking in progress", "Wait for the current tracking run to finish.")
@@ -930,10 +1114,10 @@ class MainWindow(QMainWindow):
             self.training.maybe_schedule("automatic verified dataset threshold")
             status = self.training.status()
         self.training_summary.setText(
-            f"{readiness['examples']:,} verified boxes across {readiness['videos']} videos and {readiness['classes']} species · "
+            f"{readiness['examples']:,} verified boxes across {readiness['videos']} media sources and {readiness['classes']} species · "
             f"{readiness['new_changes']} verified dataset changes since training · {readiness['pending']:,} pending"
         )
-        self.dataset_stats.setText(f"{readiness['examples']:,} verified boxes · {readiness['videos']} videos · {readiness['pending']:,} pending proposals")
+        self.dataset_stats.setText(f"{readiness['examples']:,} verified boxes · {readiness['videos']} media sources · {readiness['pending']:,} pending proposals")
         self.training_progress.setValue(status["progress"])
         self.training_progress.setFormat(status["message"])
         self.train_now_button.setEnabled(not status["running"])
@@ -967,15 +1151,67 @@ class MainWindow(QMainWindow):
             export_project_backup(self.db, self.current_project["id"], path)
             self.statusBar().showMessage(f"Project backup saved to {path}", 8000)
 
-    def import_project(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import FinFrame project", "", "FinFrame project (*.finframe.json *.json)")
+    def export_contribution(self) -> None:
+        if not self.current_project:
+            return
+        safe_name = self.current_project["name"].replace(" ", "_")
+        default = str(self.data_dir / "exports" / f"{safe_name}.finframe.zip")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export student contribution",
+            default,
+            "FinFrame contribution (*.finframe.zip *.zip)",
+        )
         if not path:
             return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            snapshot = json.loads(Path(path).read_text(encoding="utf-8"))
-            project = self.db.import_project_snapshot(snapshot)
-            self.refresh_projects(project["id"])
+            export_contribution_bundle(self.db, self.current_project["id"], path)
+            QMessageBox.information(
+                self,
+                "Contribution ready",
+                "One portable file was created with the project labels and annotated frames. "
+                "Send this file to the person maintaining the combined training database.\n\n"
+                f"{path}",
+            )
+        except DatasetError as exc:
+            QMessageBox.warning(self, "Export unavailable", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def import_project(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Import student contributions or projects",
+            "",
+            "FinFrame files (*.finframe.zip *.zip *.finframe.json *.json)",
+        )
+        if not paths:
+            return
+        imported_projects = []
+        embedded_frames = 0
+        errors = []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        for path in paths:
+            try:
+                if Path(path).suffix.lower() == ".zip":
+                    imported = import_contribution_bundle(self.db, path, self.data_dir)
+                    project = imported["project"]
+                    embedded_frames += int(imported["embedded_frames"])
+                else:
+                    snapshot = json.loads(Path(path).read_text(encoding="utf-8"))
+                    project = self.db.import_project_snapshot(snapshot)
+                imported_projects.append(project)
+            except Exception as exc:
+                errors.append(f"{Path(path).name}: {exc}")
+        QApplication.restoreOverrideCursor()
+        if imported_projects:
+            self.refresh_projects(imported_projects[-1]["id"])
             self.training.maybe_schedule("verified project imported")
-            QMessageBox.information(self, "Project imported", "Verified annotations from the imported project now contribute to the shared dataset and future training.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Import failed", str(exc))
+            QMessageBox.information(
+                self, "Contributions imported",
+                f"Imported {len(imported_projects):,} project{'s' if len(imported_projects) != 1 else ''} and "
+                f"stored {embedded_frames:,} annotated frames. Verified labels now contribute to shared training.",
+            )
+        if errors:
+            QMessageBox.warning(self, "Some imports failed", "\n".join(errors))
