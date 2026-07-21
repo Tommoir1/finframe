@@ -98,6 +98,8 @@ class Database:
                     reviewed INTEGER NOT NULL DEFAULT 0,
                     note TEXT NOT NULL DEFAULT '',
                     image_path TEXT NOT NULL DEFAULT '',
+                    training_selected INTEGER NOT NULL DEFAULT 0,
+                    training_reason TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
                     UNIQUE(video_id, frame_number)
                 );
@@ -165,8 +167,28 @@ class Database:
             if "media_type" not in video_columns:
                 db.execute("ALTER TABLE videos ADD COLUMN media_type TEXT NOT NULL DEFAULT 'video'")
             frame_columns = {row[1] for row in db.execute("PRAGMA table_info(frames)")}
+            training_selection_added = "training_selected" not in frame_columns
             if "image_path" not in frame_columns:
                 db.execute("ALTER TABLE frames ADD COLUMN image_path TEXT NOT NULL DEFAULT ''")
+            if "training_selected" not in frame_columns:
+                db.execute("ALTER TABLE frames ADD COLUMN training_selected INTEGER NOT NULL DEFAULT 0")
+            if "training_reason" not in frame_columns:
+                db.execute("ALTER TABLE frames ADD COLUMN training_reason TEXT NOT NULL DEFAULT ''")
+            if training_selection_added:
+                db.execute(
+                    """UPDATE frames SET reviewed=1,updated_at=?
+                       WHERE EXISTS (SELECT 1 FROM annotations a WHERE a.frame_id=frames.id AND a.status='verified')""",
+                    (utc_now(),),
+                )
+                selected = db.execute(
+                    """UPDATE frames SET training_selected=1,training_reason='legacy_verified'
+                       WHERE EXISTS (
+                           SELECT 1 FROM annotations a WHERE a.frame_id=frames.id AND a.status='verified'
+                           AND (a.source='manual' OR a.source LIKE '%_corrected')
+                       )"""
+                ).rowcount
+                if selected:
+                    self._bump_training_revision(db)
             for common, scientific, code, color in STARTER_SPECIES:
                 db.execute(
                     "INSERT OR IGNORE INTO species(id, common_name, scientific_name, code, color, created_at) VALUES(?,?,?,?,?,?)",
@@ -182,6 +204,26 @@ class Database:
         db.execute(
             """INSERT INTO settings(key,value) VALUES('verified_dataset_revision','1')
                ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)"""
+        )
+
+    @staticmethod
+    def _bump_training_revision(db: sqlite3.Connection) -> None:
+        db.execute(
+            """INSERT INTO settings(key,value) VALUES('training_dataset_revision','1')
+               ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)"""
+        )
+
+    @classmethod
+    def _invalidate_frame_review(cls, db: sqlite3.Connection, frame_id: str) -> None:
+        frame = db.execute(
+            "SELECT reviewed,training_selected FROM frames WHERE id=?",
+            (frame_id,),
+        ).fetchone()
+        if frame is None or not frame["reviewed"]:
+            return
+        db.execute(
+            "UPDATE frames SET reviewed=0,training_selected=0,training_reason='',updated_at=? WHERE id=?",
+            (utc_now(), frame_id),
         )
 
     def create_project(self, name: str, **metadata: Any) -> dict[str, Any]:
@@ -354,6 +396,7 @@ class Database:
         frame = self.ensure_frame(video_id, frame_number, time_seconds)
         annotation_id, now = new_id("ann"), utc_now()
         with self.connect() as db:
+            self._invalidate_frame_review(db, frame["id"])
             db.execute(
                 """INSERT INTO annotations(
                        id,frame_id,species_id,track_id,x,y,width,height,life_stage,activity,uncertain,status,source,
@@ -396,6 +439,7 @@ class Database:
         values["updated_at"] = utc_now()
         assignments = ",".join(f"{key}=?" for key in values)
         with self.connect() as db:
+            self._invalidate_frame_review(db, current["frame_id"])
             db.execute(f"UPDATE annotations SET {assignments} WHERE id=?", (*values.values(), annotation_id))
             if current["status"] == "verified":
                 self._bump_dataset_revision(db)
@@ -414,6 +458,7 @@ class Database:
             else:
                 source = annotation["source"]
         with self.connect() as db:
+            self._invalidate_frame_review(db, annotation["frame_id"])
             db.execute("UPDATE annotations SET status=?,source=?,updated_at=? WHERE id=?", (status, source, utc_now(), annotation_id))
             if annotation["status"] != status and "verified" in {annotation["status"], status}:
                 self._bump_dataset_revision(db)
@@ -422,6 +467,7 @@ class Database:
     def delete_annotation(self, annotation_id: str) -> None:
         annotation = self.get_annotation(annotation_id)
         with self.connect() as db:
+            self._invalidate_frame_review(db, annotation["frame_id"])
             db.execute("DELETE FROM annotations WHERE id=?", (annotation_id,))
             if annotation["status"] == "verified":
                 self._bump_dataset_revision(db)
@@ -456,6 +502,8 @@ class Database:
         reviewed: bool | None = None,
         note: str | None = None,
         image_path: str | Path | None = None,
+        training_selected: bool | None = None,
+        training_reason: str | None = None,
     ) -> None:
         values: dict[str, Any] = {}
         if reviewed is not None:
@@ -464,6 +512,10 @@ class Database:
             values["note"] = note
         if image_path is not None:
             values["image_path"] = str(Path(image_path).expanduser().resolve()) if str(image_path) else ""
+        if training_selected is not None:
+            values["training_selected"] = int(training_selected)
+        if training_reason is not None:
+            values["training_reason"] = training_reason
         if not values:
             return
         values["updated_at"] = utc_now()
@@ -473,6 +525,86 @@ class Database:
                 f"UPDATE frames SET {assignments} WHERE video_id=? AND frame_number=?",
                 (*values.values(), video_id, frame_number),
             )
+
+    def set_frame_reviewed(
+        self,
+        video_id: str,
+        frame_number: int,
+        reviewed: bool,
+        *,
+        sample_interval_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        video = self.get_video(video_id)
+        time_seconds = frame_number / max(float(video["fps"]), 0.001) if video.get("media_type") == "video" else 0.0
+        frame = self.ensure_frame(video_id, frame_number, time_seconds)
+        interval = float(
+            sample_interval_seconds
+            if sample_interval_seconds is not None
+            else self.get_setting("training_sample_interval_seconds", 1.0)
+        )
+        with self.connect() as db:
+            current = db.execute("SELECT * FROM frames WHERE id=?", (frame["id"],)).fetchone()
+            selected, reason = 0, ""
+            if reviewed:
+                pending = db.execute(
+                    "SELECT COUNT(*) FROM annotations WHERE frame_id=? AND status='pending'",
+                    (frame["id"],),
+                ).fetchone()[0]
+                if pending:
+                    raise ValueError("Approve, correct or reject every pending box before marking the frame complete")
+                sources = [row[0] for row in db.execute(
+                    "SELECT source FROM annotations WHERE frame_id=? AND status='verified'",
+                    (frame["id"],),
+                )]
+                strong_label = any(source == "manual" or source.endswith("_corrected") for source in sources)
+                if strong_label:
+                    selected, reason = 1, "manual_or_corrected"
+                else:
+                    closest = db.execute(
+                        """SELECT MIN(ABS(time_seconds-?)) FROM frames
+                           WHERE video_id=? AND id!=? AND reviewed=1 AND training_selected=1""",
+                        (time_seconds, video_id, frame["id"]),
+                    ).fetchone()[0]
+                    if closest is None or float(closest) >= max(0.0, interval):
+                        selected, reason = 1, "temporal_sample"
+                    else:
+                        reason = "near_duplicate"
+            changed = (
+                int(current["reviewed"]) != int(reviewed)
+                or int(current["training_selected"]) != selected
+                or current["training_reason"] != reason
+            )
+            if changed:
+                old_eligible = bool(current["reviewed"] and current["training_selected"])
+                new_eligible = bool(reviewed and selected)
+                db.execute(
+                    """UPDATE frames SET reviewed=?,training_selected=?,training_reason=?,updated_at=?
+                       WHERE id=?""",
+                    (int(reviewed), selected, reason, utc_now(), frame["id"]),
+                )
+                if old_eligible or new_eligible:
+                    self._bump_training_revision(db)
+        return self.get_frame(video_id, frame_number)
+
+    def pending_annotations_in_range(self, video_id: str, start_frame: int, end_frame: int) -> list[dict[str, Any]]:
+        first, last = sorted((int(start_frame), int(end_frame)))
+        with self.connect() as db:
+            return self._rows(db.execute(
+                """SELECT a.*,f.frame_number FROM annotations a JOIN frames f ON f.id=a.frame_id
+                   WHERE f.video_id=? AND f.frame_number BETWEEN ? AND ? AND a.status='pending'
+                   ORDER BY f.frame_number,a.created_at""",
+                (video_id, first, last),
+            ))
+
+    def annotated_frame_numbers_in_range(self, video_id: str, start_frame: int, end_frame: int) -> list[int]:
+        first, last = sorted((int(start_frame), int(end_frame)))
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT DISTINCT f.frame_number FROM frames f JOIN annotations a ON a.frame_id=f.id
+                   WHERE f.video_id=? AND f.frame_number BETWEEN ? AND ? ORDER BY f.frame_number""",
+                (video_id, first, last),
+            )
+        return [int(row[0]) for row in rows]
 
     def annotations_for_frame(self, video_id: str, frame_number: int, *, include_rejected: bool = False) -> list[dict[str, Any]]:
         query = """SELECT a.*,s.common_name,s.scientific_name,s.code,s.color
@@ -517,9 +649,16 @@ class Database:
                 continue
         return f"{species['code']}-{highest + 1:03d}"
 
-    def verified_annotations(self, video_id: str | None = None) -> list[dict[str, Any]]:
+    def verified_annotations(
+        self,
+        video_id: str | None = None,
+        *,
+        reviewed_only: bool = True,
+        training_only: bool = False,
+    ) -> list[dict[str, Any]]:
         query = """SELECT a.*,s.common_name,s.scientific_name,s.code,s.color,
                           f.video_id,f.frame_number,f.time_seconds,f.reviewed,f.note,f.image_path,
+                          f.training_selected,f.training_reason,
                           v.path AS video_path,v.file_name,v.media_type,v.width AS video_width,v.height AS video_height,v.fps,
                           p.id AS project_id,p.name AS project_name,p.deployment_id,p.site,p.observer
                    FROM annotations a
@@ -528,13 +667,28 @@ class Database:
                    JOIN videos v ON v.id=f.video_id
                    JOIN projects p ON p.id=v.project_id
                    WHERE a.status='verified'"""
-        params: tuple[Any, ...] = ()
+        params: list[Any] = []
+        if reviewed_only:
+            query += " AND f.reviewed=1"
+        if training_only:
+            query += " AND f.training_selected=1"
         if video_id:
             query += " AND f.video_id=?"
-            params = (video_id,)
+            params.append(video_id)
         query += " ORDER BY v.id,f.frame_number,a.created_at"
         with self.connect() as db:
             return self._rows(db.execute(query, params))
+
+    def training_frames(self) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return self._rows(db.execute(
+                """SELECT f.*,v.path AS video_path,v.file_name,v.media_type,
+                          v.width AS video_width,v.height AS video_height,v.fps,
+                          v.project_id,p.deployment_id,p.name AS project_name,p.site,p.observer
+                   FROM frames f JOIN videos v ON v.id=f.video_id JOIN projects p ON p.id=v.project_id
+                   WHERE f.reviewed=1 AND f.training_selected=1
+                   ORDER BY v.id,f.frame_number"""
+            ))
 
     def annotated_frames(self, *, verified_only: bool = True) -> list[dict[str, Any]]:
         condition = "a.status='verified'" if verified_only else "a.status!='rejected'"
@@ -562,7 +716,7 @@ class Database:
                 """WITH counts AS (
                        SELECT f.id AS frame_id,f.frame_number,f.time_seconds,a.species_id,COUNT(*) AS fish_count
                        FROM frames f JOIN annotations a ON a.frame_id=f.id
-                       WHERE f.video_id=? AND a.status='verified'
+                       WHERE f.video_id=? AND f.reviewed=1 AND a.status='verified'
                        GROUP BY f.id,a.species_id
                    ), ranked AS (
                        SELECT counts.*,ROW_NUMBER() OVER(PARTITION BY species_id ORDER BY fish_count DESC,frame_number ASC) AS rank
@@ -578,12 +732,30 @@ class Database:
     def training_stats(self) -> dict[str, int]:
         with self.connect() as db:
             row = db.execute(
-                """SELECT COUNT(*) AS examples,COUNT(DISTINCT a.species_id) AS classes,COUNT(DISTINCT f.video_id) AS videos
-                   FROM annotations a JOIN frames f ON f.id=a.frame_id WHERE a.status='verified'"""
+                """SELECT COUNT(a.id) AS examples,COUNT(DISTINCT a.species_id) AS classes,
+                          COUNT(DISTINCT f.video_id) AS videos,COUNT(DISTINCT f.id) AS training_frames
+                   FROM frames f LEFT JOIN annotations a ON a.frame_id=f.id AND a.status='verified'
+                   WHERE f.reviewed=1 AND f.training_selected=1"""
             ).fetchone()
             pending = db.execute("SELECT COUNT(*) FROM annotations WHERE status='pending'").fetchone()[0]
-        revision = int(self.get_setting("verified_dataset_revision", 0) or 0)
-        return {"examples": int(row["examples"]), "classes": int(row["classes"]), "videos": int(row["videos"]), "pending": int(pending), "revision": revision}
+            verified_total = db.execute(
+                """SELECT COUNT(*) FROM annotations a JOIN frames f ON f.id=a.frame_id
+                   WHERE a.status='verified' AND f.reviewed=1"""
+            ).fetchone()[0]
+            reviewed_frames = db.execute("SELECT COUNT(*) FROM frames WHERE reviewed=1").fetchone()[0]
+        revision = int(self.get_setting("training_dataset_revision", 0) or 0)
+        verified_revision = int(self.get_setting("verified_dataset_revision", 0) or 0)
+        return {
+            "examples": int(row["examples"]),
+            "classes": int(row["classes"]),
+            "videos": int(row["videos"]),
+            "frames": int(row["training_frames"]),
+            "verified_total": int(verified_total),
+            "reviewed_frames": int(reviewed_frames),
+            "pending": int(pending),
+            "revision": revision,
+            "verified_revision": verified_revision,
+        }
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         with self.connect() as db:
@@ -747,8 +919,12 @@ class Database:
                 self.update_frame(
                     video["id"],
                     frame_number,
-                    reviewed=bool(source_frame.get("reviewed", False)),
                     note=source_frame.get("note", ""),
                     image_path=source_frame.get("image_path", ""),
                 )
+                if source_frame.get("reviewed", False):
+                    try:
+                        self.set_frame_reviewed(video["id"], frame_number, True)
+                    except ValueError:
+                        self.set_frame_reviewed(video["id"], frame_number, False)
         return project

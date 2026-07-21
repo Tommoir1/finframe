@@ -6,7 +6,7 @@ PySide6 student interface
         +-- OpenCV image/video/frame reader and 0.5×–6× playback
         +-- Default box-seeded CSRT/KCF/MIL propagation
         +-- SQLite project and annotation repository
-        +-- Verified-only MaxN queries
+        +-- Complete-frame MaxN queries
         +-- COCO/YOLO/CSV dataset services
         +-- Portable contribution bundle exporter/importer
         +-- Ultralytics detector training
@@ -21,9 +21,9 @@ All database methods use short independent connections with foreign keys, WAL mo
 
 ## Human review boundary
 
-Inference writes only `pending` annotations. Verified-only SQL queries are used by MaxN, training statistics and dataset builders. This makes the approval boundary structural rather than dependent on a UI filter.
+Inference writes only `pending` annotations. Final MaxN and observation exports query only verified boxes whose frames are complete. Training builders add a second database filter for selected keyframes. This makes both review boundaries structural rather than dependent on a UI filter.
 
-Any modification to a verified label advances `verified_dataset_revision`. The training coordinator compares that revision with the last completed training snapshot, allowing corrections and deletions—not only new boxes—to trigger retraining.
+Any edit to a complete frame invalidates its completion and training selection. Re-completing the edited frame, or explicitly marking a selected frame incomplete, advances `training_dataset_revision`. This prevents training from starting halfway through a correction. The coordinator compares the revision with the last completed snapshot, so finalized corrections and explicit removals trigger retraining.
 
 ## Tracking identity boundary
 
@@ -35,7 +35,7 @@ Track IDs represent uninterrupted visibility only. If the last visible box touch
 
 1. Check minimum examples, species diversity, revision threshold and cooldown.
 2. Record a queued training run.
-3. Extract labelled frames for every verified annotation.
+3. Extract complete manual/corrected frames and temporally sampled complete tracker/AI frames, including selected negatives.
 4. Create video-grouped train/validation splits.
 5. Fine-tune from the active model or configured base model.
 6. Register immutable candidate weights and metrics.

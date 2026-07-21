@@ -10,7 +10,9 @@ Every annotation has a `status`:
 - `verified`: manual, approved or corrected student label
 - `rejected`: proposal excluded by a student
 
-Only `verified` annotations contribute to MaxN, exports and detector training.
+Box status alone is not sufficient. A frame must also be marked `reviewed`, meaning the student confirmed that every visible fish was boxed. Only verified boxes on reviewed frames contribute to final MaxN and released observation exports.
+
+Reviewed frames have a separate `training_selected` flag. FinFrame always selects manual/corrected reviewed frames, temporally samples unchanged tracker/AI frames, and can select reviewed zero-fish frames as negatives. This prevents neighbouring video frames from overwhelming a training set with near-duplicates.
 
 The `source` audit field is one of:
 
@@ -64,15 +66,15 @@ The portable cohort format is one `.finframe.zip` per student project:
 
 ```text
 project.finframe.json          # taxonomy, media metadata and every review decision
-frames/<media-id>/*.jpg        # only frames/images that have annotations
+frames/<media-id>/*.jpg        # annotated frames and selected zero-fish keyframes
 README.txt
 ```
 
-Complete videos are deliberately omitted. On import, embedded frames are copied under the receiving installation's `contributions/` directory and their paths are registered in SQLite. Verified annotations can therefore train immediately without the student's original media. Pending and rejected records are also retained for audit/review, but remain excluded from training. A SHA-256 bundle fingerprint prevents accidental duplicate imports.
+Complete videos are deliberately omitted. On import, embedded frames are copied under the receiving installation's `contributions/` directory and their paths are registered in SQLite. Complete selected frames can therefore train without the student's original media. Pending and rejected records are retained for audit/review but remain excluded from training. A SHA-256 bundle fingerprint prevents accidental duplicate imports.
 
 ## Training snapshots
 
-Automatic training rebuilds a YOLO dataset from every verified annotation in the database, including still images and embedded contribution frames. With two or more independent media sources, complete sources form the validation group. With only one video, FinFrame creates a temporal holdout and records that the metric is preliminary.
+Automatic training rebuilds a YOLO dataset from every complete selected keyframe in the database, including still images, selected negative frames and embedded contribution frames. A selected frame with no fish has an empty YOLO label file. With two or more independent media sources, complete sources form the validation group. With only one video, FinFrame creates a temporal holdout and records that the metric is preliminary.
 
 Each training run stores:
 

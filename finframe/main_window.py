@@ -167,6 +167,7 @@ class MainWindow(QMainWindow):
         self.current_image: Any | None = None
         self.current_frame = 0
         self.selected_annotation_id: str | None = None
+        self.review_segment_start: int | None = None
         self.tracking_worker: TrackingWorker | None = None
         self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
@@ -301,6 +302,9 @@ class MainWindow(QMainWindow):
         annotation_panel = QGroupBox("Frame annotations")
         annotation_layout = QVBoxLayout(annotation_panel)
         self.frame_counts = QLabel("Verified fish: 0")
+        self.frame_complete = QCheckBox("Frame complete — all visible fish are boxed")
+        self.frame_complete.toggled.connect(self.frame_complete_toggled)
+        self.training_keyframe_status = QLabel("Not complete; excluded from final MaxN and training")
         self.annotation_table = QTableWidget(0, 5)
         self.annotation_table.setHorizontalHeaderLabels(["Status", "Species", "Track", "Source", "Confidence"])
         self.annotation_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -308,6 +312,8 @@ class MainWindow(QMainWindow):
         self.annotation_table.itemSelectionChanged.connect(self.annotation_selected)
         self.annotation_table.horizontalHeader().setStretchLastSection(True)
         annotation_layout.addWidget(self.frame_counts)
+        annotation_layout.addWidget(self.frame_complete)
+        annotation_layout.addWidget(self.training_keyframe_status)
         annotation_layout.addWidget(self.annotation_table, 1)
         form = QFormLayout()
         self.annotation_species = QComboBox()
@@ -334,6 +340,8 @@ class MainWindow(QMainWindow):
         self.approve_frame_button.clicked.connect(self.approve_frame_proposals)
         next_pending_button = QPushButton("Next pending frame")
         next_pending_button.clicked.connect(self.go_to_next_pending_frame)
+        self.approve_segment_button = QPushButton("Approve watched segment")
+        self.approve_segment_button.clicked.connect(self.approve_watched_segment)
         delete_button = QPushButton("Delete")
         delete_button.clicked.connect(self.delete_annotation)
         action_row.addWidget(self.save_annotation_button, 0, 0, 1, 2)
@@ -341,7 +349,8 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.reject_button, 1, 1)
         action_row.addWidget(self.approve_frame_button, 2, 0, 1, 2)
         action_row.addWidget(next_pending_button, 3, 0, 1, 2)
-        action_row.addWidget(delete_button, 4, 0, 1, 2)
+        action_row.addWidget(self.approve_segment_button, 4, 0, 1, 2)
+        action_row.addWidget(delete_button, 5, 0, 1, 2)
         annotation_layout.addLayout(action_row)
         splitter.addWidget(annotation_panel)
         splitter.setSizes([240, 900, 330])
@@ -354,11 +363,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.maxn_table, "MaxN summary")
         dataset_tab = QWidget()
         dataset_layout = QVBoxLayout(dataset_tab)
-        self.dataset_stats = QLabel("0 verified boxes · 0 media sources · 0 pending proposals")
+        self.dataset_stats = QLabel("0 verified observation boxes · 0 complete frames · 0 selected training keyframes")
         export_row = QHBoxLayout()
-        export_coco = QPushButton("Export all verified data · COCO")
+        export_coco = QPushButton("Export completed observations · COCO")
         export_coco.clicked.connect(lambda: self.export_training_data("coco"))
-        export_yolo = QPushButton("Export all verified data · YOLO")
+        export_yolo = QPushButton("Export completed observations · YOLO")
         export_yolo.clicked.connect(lambda: self.export_training_data("yolo"))
         export_row.addWidget(export_coco)
         export_row.addWidget(export_yolo)
@@ -374,11 +383,11 @@ class MainWindow(QMainWindow):
         self.training_threshold.setValue(self.training.policy.retrain_every_verified)
         self.training_threshold.valueChanged.connect(self.training_threshold_changed)
         self.training_progress = QProgressBar()
-        self.train_now_button = QPushButton("Train now from all verified data")
+        self.train_now_button = QPushButton("Train now from selected keyframes")
         self.train_now_button.clicked.connect(lambda: self.training.request_training(reason="student requested", force=True))
         training_layout.addWidget(self.training_summary, 0, 0, 1, 3)
         training_layout.addWidget(self.active_model_label, 1, 0, 1, 3)
-        training_layout.addWidget(QLabel("Retrain after verified dataset changes"), 2, 0)
+        training_layout.addWidget(QLabel("Retrain after selected-keyframe changes"), 2, 0)
         training_layout.addWidget(self.training_threshold, 2, 1)
         training_layout.addWidget(self.train_now_button, 2, 2)
         training_layout.addWidget(self.training_progress, 3, 0, 1, 3)
@@ -432,7 +441,9 @@ class MainWindow(QMainWindow):
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Start annotating")
         dialog.setText("What would you like to annotate?")
-        dialog.setInformativeText("Images and videos contribute verified boxes to the same shared training dataset.")
+        dialog.setInformativeText(
+            "Completed images and diverse completed video keyframes contribute boxes to the same shared training dataset."
+        )
         video_button = dialog.addButton("Annotate video", QMessageBox.ButtonRole.ActionRole)
         image_button = dialog.addButton("Annotate images", QMessageBox.ButtonRole.ActionRole)
         dialog.addButton("Open existing project", QMessageBox.ButtonRole.RejectRole)
@@ -626,6 +637,7 @@ class MainWindow(QMainWindow):
         if self.capture:
             self.capture.release()
         self.seed_tracking.clear()
+        self.review_segment_start = None
         self._refresh_seed_tracking_status()
         self.capture = (
             cv2.VideoCapture(video["path"])
@@ -661,6 +673,7 @@ class MainWindow(QMainWindow):
             self.bot_button,
         ):
             control.setEnabled(playable)
+        self.approve_segment_button.setEnabled(playable)
 
     def seek_frame(self, frame_number: int, propagate_seeded: bool = False) -> None:
         if not self.current_video:
@@ -669,6 +682,7 @@ class MainWindow(QMainWindow):
         previous_frame = self.current_frame
         if not propagate_seeded and self.current_image is not None and frame_number != previous_frame:
             self.seed_tracking.clear()
+            self.review_segment_start = None
             self._refresh_seed_tracking_status("Propagation stopped after seeking")
         image = None
         if self.current_video.get("media_type") == "image":
@@ -728,6 +742,8 @@ class MainWindow(QMainWindow):
             self.play_timer.stop()
             self.play_button.setText("▶")
         else:
+            if self.review_segment_start is None:
+                self.review_segment_start = self.current_frame
             if self.seed_tracking_checkbox.isChecked():
                 self._seed_current_frame_annotations()
             self.play_timer.start(self._playback_interval())
@@ -829,6 +845,8 @@ class MainWindow(QMainWindow):
             self.species_list.addItem(row)
             if item["id"] == selected:
                 self.species_list.setCurrentItem(row)
+        if self.species_list.count() and self.species_list.currentRow() < 0:
+            self.species_list.setCurrentRow(0)
         self.annotation_species.clear()
         for item in self.db.list_species():
             self.annotation_species.addItem(f"{item['common_name']} · {item['code']}", item["id"])
@@ -899,6 +917,19 @@ class MainWindow(QMainWindow):
         if annotation["status"] == "verified":
             self.training.maybe_schedule("verified box geometry changed")
 
+    def frame_complete_toggled(self, complete: bool) -> None:
+        if not self.current_video:
+            return
+        try:
+            frame = self.db.set_frame_reviewed(self.current_video["id"], self.current_frame, complete)
+            if frame["reviewed"] and frame["training_selected"]:
+                self.training.maybe_schedule("complete training keyframe added")
+        except ValueError as exc:
+            with QSignalBlocker(self.frame_complete):
+                self.frame_complete.setChecked(False)
+            QMessageBox.information(self, "Frame is not complete", str(exc))
+        self.refresh_frame_annotations()
+
     def refresh_frame_annotations(self) -> None:
         if not self.current_video:
             self.canvas.set_annotations([])
@@ -923,7 +954,21 @@ class MainWindow(QMainWindow):
                 self.annotation_table.selectRow(row)
         verified_count = sum(item["status"] == "verified" for item in annotations)
         pending_count = sum(item["status"] == "pending" for item in annotations)
-        self.frame_counts.setText(f"Verified fish: {verified_count} · Pending proposals: {pending_count}")
+        try:
+            frame = self.db.get_frame(self.current_video["id"], self.current_frame)
+        except KeyError:
+            frame = {"reviewed": 0, "training_selected": 0, "training_reason": ""}
+        with QSignalBlocker(self.frame_complete):
+            self.frame_complete.setChecked(bool(frame["reviewed"]))
+        if frame["reviewed"] and frame["training_selected"]:
+            reason = str(frame["training_reason"]).replace("_", " ")
+            self.training_keyframe_status.setText(f"Complete MaxN frame · selected for training ({reason})")
+        elif frame["reviewed"]:
+            self.training_keyframe_status.setText("Complete MaxN frame · training skipped as a near-duplicate")
+        else:
+            self.training_keyframe_status.setText("Not complete; excluded from final MaxN and training")
+        completeness = "complete" if frame["reviewed"] else "incomplete"
+        self.frame_counts.setText(f"Verified fish: {verified_count} · Pending proposals: {pending_count} · {completeness}")
         self.approve_frame_button.setEnabled(pending_count > 0)
         self.refresh_maxn()
 
@@ -1004,6 +1049,45 @@ class MainWindow(QMainWindow):
             self.db.review_annotation(annotation["id"], "approve")
         self.refresh_frame_annotations()
         self.training.maybe_schedule("frame proposals approved")
+
+    def approve_watched_segment(self) -> None:
+        if not self.current_video or self.current_video.get("media_type") != "video":
+            return
+        start = self.review_segment_start if self.review_segment_start is not None else self.current_frame
+        end = self.current_frame
+        first, last = sorted((start, end))
+        pending = self.db.pending_annotations_in_range(self.current_video["id"], first, last)
+        if QMessageBox.question(
+            self,
+            "Approve watched segment",
+            f"Confirm that you watched frames {first:,}–{last:,}, the boxes followed the fish correctly, "
+            f"and every visible fish was boxed.\n\nApprove {len(pending):,} pending boxes and mark the segment complete for MaxN?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for annotation in pending:
+                self.db.review_annotation(annotation["id"], "approve")
+            frame_numbers = set(self.db.annotated_frame_numbers_in_range(self.current_video["id"], first, last))
+            sample_interval = float(self.db.get_setting("training_sample_interval_seconds", 1.0))
+            sample_step = max(1, round(self._fps() * sample_interval))
+            frame_numbers.update(range(first, last + 1, sample_step))
+            frame_numbers.add(last)
+            for frame_number in sorted(frame_numbers):
+                self.db.set_frame_reviewed(self.current_video["id"], frame_number, True)
+            self.review_segment_start = None
+            self.training.maybe_schedule("watched segment approved")
+            self.refresh_frame_annotations()
+            QMessageBox.information(
+                self,
+                "Segment approved",
+                f"Frames {first:,}–{last:,} now contribute completed observations to MaxN. "
+                "FinFrame selected manual/corrected and temporally spaced keyframes for training.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not approve segment", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def go_to_next_pending_frame(self) -> None:
         if not self.current_video:
@@ -1114,10 +1198,14 @@ class MainWindow(QMainWindow):
             self.training.maybe_schedule("automatic verified dataset threshold")
             status = self.training.status()
         self.training_summary.setText(
-            f"{readiness['examples']:,} verified boxes across {readiness['videos']} media sources and {readiness['classes']} species · "
-            f"{readiness['new_changes']} verified dataset changes since training · {readiness['pending']:,} pending"
+            f"{readiness['frames']:,} diverse complete keyframes with {readiness['examples']:,} fish boxes across "
+            f"{readiness['videos']} media sources and {readiness['classes']} species · "
+            f"{readiness['new_changes']} training-dataset changes since training"
         )
-        self.dataset_stats.setText(f"{readiness['examples']:,} verified boxes · {readiness['videos']} media sources · {readiness['pending']:,} pending proposals")
+        self.dataset_stats.setText(
+            f"{readiness['verified_total']:,} verified observation boxes · {readiness['reviewed_frames']:,} complete frames · "
+            f"{readiness['frames']:,} selected training keyframes · {readiness['pending']:,} pending proposals"
+        )
         self.training_progress.setValue(status["progress"])
         self.training_progress.setFormat(status["message"])
         self.train_now_button.setEnabled(not status["running"])
@@ -1170,7 +1258,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Contribution ready",
-                "One portable file was created with the project labels and annotated frames. "
+                "One portable file was created with the project labels, annotated frames and selected negative keyframes. "
                 "Send this file to the person maintaining the combined training database.\n\n"
                 f"{path}",
             )
@@ -1207,11 +1295,11 @@ class MainWindow(QMainWindow):
         QApplication.restoreOverrideCursor()
         if imported_projects:
             self.refresh_projects(imported_projects[-1]["id"])
-            self.training.maybe_schedule("verified project imported")
+            self.training.maybe_schedule("completed training keyframes imported")
             QMessageBox.information(
                 self, "Contributions imported",
                 f"Imported {len(imported_projects):,} project{'s' if len(imported_projects) != 1 else ''} and "
-                f"stored {embedded_frames:,} annotated frames. Verified labels now contribute to shared training.",
+                f"stored {embedded_frames:,} portable frames. Complete selected keyframes now contribute to shared training.",
             )
         if errors:
             QMessageBox.warning(self, "Some imports failed", "\n".join(errors))

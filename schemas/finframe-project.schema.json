@@ -12,7 +12,7 @@
       "type": "object",
       "properties": {
         "created_at": { "type": "string", "format": "date-time" },
-        "embedded_annotated_frames": { "type": "integer", "minimum": 0 },
+        "embedded_frames": { "type": "integer", "minimum": 0 },
         "includes_full_videos": { "type": "boolean" }
       },
       "additionalProperties": false
@@ -96,6 +96,8 @@
         "note": { "type": "string" },
         "image_path": { "type": "string" },
         "portable_image": { "type": "string" },
+        "training_selected": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "training_reason": { "type": "string" },
         "updated_at": { "type": "string", "format": "date-time" },
         "annotations": { "type": "array", "items": { "$ref": "#/$defs/annotation" } }
       },

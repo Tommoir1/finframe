@@ -35,7 +35,7 @@ def _csv_bytes(rows: list[list[Any]]) -> bytes:
 def _verified_records(db: Database, video_id: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     annotations = db.verified_annotations(video_id)
     if not annotations:
-        raise DatasetError("There are no verified annotations to export")
+        raise DatasetError("There are no verified annotations on complete frames to export")
     frames: dict[tuple[str, int], dict[str, Any]] = {}
     for annotation in annotations:
         key = (annotation["video_id"], annotation["frame_number"])
@@ -56,6 +56,8 @@ def _verified_records(db: Database, video_id: str | None = None) -> tuple[list[d
             "site": annotation["site"],
             "observer": annotation["observer"],
             "reviewed": annotation["reviewed"],
+            "training_selected": annotation.get("training_selected", 0),
+            "training_reason": annotation.get("training_reason", ""),
             "note": annotation["note"],
         })
     return annotations, list(frames.values())
@@ -165,7 +167,7 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
                 "supercategory": "fish",
             } for index, item in enumerate(species)]
             archive.writestr("annotations/instances.json", json.dumps({
-                "info": {"description": "FinFrame verified annotations", "version": "2.0", "created": utc_now()},
+                "info": {"description": "FinFrame completed observations", "version": "2.0", "created": utc_now()},
                 "images": coco_images,
                 "annotations": coco_annotations,
                 "categories": categories,
@@ -182,9 +184,9 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
             archive.writestr("data.yaml", f"path: .\ntrain: images\nval: images\nnames:\n{names}\n")
             archive.writestr("classes.txt", "\n".join(item["common_name"] for item in species))
 
-        manifest = [["image_file", "source_media", "media_type", "source_path", "project", "deployment_id", "frame_number", "time_seconds", "width", "height", "image_included"]]
+        manifest = [["image_file", "source_media", "media_type", "source_path", "project", "deployment_id", "frame_number", "time_seconds", "width", "height", "reviewed", "training_keyframe", "training_reason", "image_included"]]
         for frame in frames:
-            manifest.append([_frame_name(frame), frame["file_name"], frame["media_type"], frame["video_path"], frame["project_name"], frame["deployment_id"], frame["frame_number"], frame["time_seconds"], frame["width"], frame["height"], include_images])
+            manifest.append([_frame_name(frame), frame["file_name"], frame["media_type"], frame["video_path"], frame["project_name"], frame["deployment_id"], frame["frame_number"], frame["time_seconds"], frame["width"], frame["height"], bool(frame["reviewed"]), bool(frame["training_selected"]), frame["training_reason"], include_images])
         archive.writestr("metadata/frame_manifest.csv", _csv_bytes(manifest))
         counts: dict[tuple[str, int, str], int] = defaultdict(int)
         for annotation in annotations:
@@ -217,9 +219,9 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
         archive.writestr("metadata/observations.csv", _csv_bytes(observation_rows))
         archive.writestr("metadata/verified_annotations.json", json.dumps(annotations, indent=2))
         archive.writestr("README.txt", (
-            "FinFrame 2 verified dataset\n\n"
+            "FinFrame 2 completed-observation dataset\n\n"
             f"Format: {fmt.upper()}\nFrame images included: {'yes' if include_images else 'no'}\n"
-            "Only student-verified or student-corrected boxes are included. Pending AI and tracker proposals are excluded.\n"
+            "Only verified boxes on student-completed frames are included. Pending proposals and incomplete frames are excluded.\n"
             "Split training, validation and test data by complete deployment/video to avoid leakage.\n"
         ))
     return destination
@@ -237,13 +239,17 @@ def export_contribution_bundle(db: Database, project_id: str, destination: str |
     destination = Path(destination).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     snapshot = db.project_snapshot(project_id)
-    if not any(frame.get("annotations") for video in snapshot["videos"] for frame in video.get("frames", [])):
-        raise DatasetError("Annotate at least one image or video frame before exporting a contribution")
+    if not any(
+        frame.get("annotations") or frame.get("training_selected")
+        for video in snapshot["videos"]
+        for frame in video.get("frames", [])
+    ):
+        raise DatasetError("Annotate at least one frame or complete a zero-fish keyframe before exporting a contribution")
     embedded_frames = 0
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for video in snapshot["videos"]:
             for frame in video.get("frames", []):
-                if not frame.get("annotations"):
+                if not frame.get("annotations") and not frame.get("training_selected"):
                     continue
                 image = _read_frame(
                     video["path"],
@@ -262,15 +268,15 @@ def export_contribution_bundle(db: Database, project_id: str, destination: str |
                 embedded_frames += 1
         snapshot["contribution"] = {
             "created_at": utc_now(),
-            "embedded_annotated_frames": embedded_frames,
+            "embedded_frames": embedded_frames,
             "includes_full_videos": False,
         }
         archive.writestr("project.finframe.json", json.dumps(snapshot, indent=2))
         archive.writestr(
             "README.txt",
             "FinFrame student contribution bundle\n\n"
-            "Contains project metadata, all annotation decisions, and JPEG copies of annotated frames.\n"
-            "It does not contain complete source videos. Import it into FinFrame to add verified labels to the shared training database.\n",
+            "Contains project metadata, all annotation decisions, and JPEG copies of annotated and selected negative frames.\n"
+            "It does not contain complete source videos. Import it into FinFrame to add completed observations and selected keyframes to the shared database.\n",
         )
     return destination
 
@@ -320,9 +326,14 @@ def import_contribution_bundle(db: Database, source: str | Path, data_dir: str |
 
 
 def build_yolo_training_dataset(db: Database, destination: str | Path) -> dict[str, Any]:
-    """Build a detector dataset from every verified annotation in the database."""
+    """Build a detector dataset from reviewed, automatically sampled keyframes."""
     destination = Path(destination).expanduser().resolve()
-    annotations, frames = _verified_records(db)
+    frames = db.training_frames()
+    annotations = db.verified_annotations(training_only=True)
+    if not frames:
+        raise DatasetError("No complete training keyframes are available")
+    if not annotations:
+        raise DatasetError("Training requires at least one complete keyframe containing a verified fish")
     species = sorted({item["species_id"]: item for item in annotations}.values(), key=lambda item: item["code"])
     class_index = {item["species_id"]: index for index, item in enumerate(species)}
     by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
