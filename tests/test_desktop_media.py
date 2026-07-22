@@ -94,6 +94,22 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertEqual(Path(window.current_video["path"]), second_path.resolve())
             window.close()
 
+    def test_timeline_sits_directly_below_media_and_master_species_has_no_extra_label(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Layout survey")
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+
+            video_layout = window.canvas.parentWidget().layout()
+            self.assertEqual(video_layout.indexOf(window.timeline_row), video_layout.indexOf(window.canvas) + 1)
+            self.assertIs(window.timeline.parentWidget(), window.timeline_row)
+            species_texts = [window.species_list.item(index).text() for index in range(window.species_list.count())]
+            self.assertTrue(species_texts)
+            self.assertFalse(any("Master species list" in text for text in species_texts))
+            window.close()
+
     def test_background_playback_keeps_qt_events_responsive(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
