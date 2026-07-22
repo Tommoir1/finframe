@@ -655,7 +655,8 @@ class Database:
         return [int(row[0]) for row in rows]
 
     def annotations_for_frame(self, video_id: str, frame_number: int, *, include_rejected: bool = False) -> list[dict[str, Any]]:
-        query = """SELECT a.*,s.common_name,s.scientific_name,s.code,s.color
+        query = """SELECT a.*,s.common_name,s.scientific_name,s.code,s.color,
+                          f.video_id,f.frame_number,f.time_seconds
                    FROM frames f JOIN annotations a ON a.frame_id=f.id JOIN species s ON s.id=a.species_id
                    WHERE f.video_id=? AND f.frame_number=?"""
         params: list[Any] = [video_id, frame_number]

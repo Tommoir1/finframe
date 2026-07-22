@@ -577,6 +577,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:
         self.stop_playback(refresh=False)
+        if hasattr(self, "training_timer"):
+            self.training_timer.stop()
         if self.capture:
             self.capture.release()
         event.accept()

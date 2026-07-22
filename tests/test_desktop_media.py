@@ -179,6 +179,42 @@ class DesktopMediaTests(unittest.TestCase):
                 self.assertEqual(proposals[0]["track_id"], "FISH-001")
                 self.assertEqual(proposals[0]["status"], "pending")
 
+    def test_window_plays_after_a_student_draws_an_annotation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "annotated-playback.avi"
+            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30, (48, 32))
+            if not writer.isOpened():
+                self.skipTest("MJPG VideoWriter is unavailable")
+            for _ in range(12):
+                writer.write(np.full((32, 48, 3), 80, dtype=np.uint8))
+            writer.release()
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Student annotation playback")
+            video = db.add_video(
+                project["id"], path, duration=.4, width=48, height=32,
+                fps=30, frame_count=12, media_type="video"
+            )
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.seed_tracking = SeedTrackingSession(tracker_factory=StableTracker)
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(window.video_combo.findData(video["id"]))
+            self.app.processEvents()
+
+            window.create_manual_box((.1, .1, .2, .2))
+            loaded = db.annotations_for_frame(video["id"], 0)
+            self.assertEqual(loaded[0]["frame_number"], 0)
+            window.toggle_playback()
+            worker = window.playback_worker
+            self.assertIsNotNone(worker)
+            self.assertTrue(worker.wait(5000))
+            self.app.processEvents()
+
+            self.assertEqual(worker.error_message, "")
+            self.assertEqual(worker.last_frame, 11)
+            self.assertEqual(len(db.annotations_for_frame(video["id"], 1)), 1)
+            window.close()
+
     def test_main_window_can_change_speed_and_pause_during_playback(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

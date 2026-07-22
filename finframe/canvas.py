@@ -87,14 +87,33 @@ class AnnotationCanvas(QWidget):
                 pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen)
             screen_box = self._screen_box(self._box(annotation))
-            painter.fillRect(screen_box, QColor(color.red(), color.green(), color.blue(), 35))
+            painter.fillRect(screen_box, QColor(color.red(), color.green(), color.blue(), 35 if selected else 14))
             painter.drawRect(screen_box)
             label = f"{'AI? · ' if annotation.get('status') == 'pending' else ''}{annotation.get('code','')} · {annotation.get('track_id','')}"
+            label_font = painter.font()
+            label_font.setPixelSize(11 if selected else 9)
+            label_font.setBold(selected)
+            painter.setFont(label_font)
             metrics = painter.fontMetrics()
-            label_rect = QRectF(screen_box.x(), max(target.y(), screen_box.y() - 22), metrics.horizontalAdvance(label) + 12, 21)
-            painter.fillRect(label_rect, color)
-            painter.setPen(QColor("#06130f"))
-            painter.drawText(label_rect.adjusted(6, 0, -3, 0), Qt.AlignmentFlag.AlignVCenter, label)
+            label_height = 17 if selected else 13
+            horizontal_padding = 5 if selected else 3
+            label_rect = QRectF(
+                screen_box.x(),
+                max(target.y(), screen_box.y() - label_height - 1),
+                metrics.horizontalAdvance(label) + horizontal_padding * 2,
+                label_height,
+            )
+            label_background = QColor(color)
+            label_background.setAlpha(235 if selected else 105)
+            painter.fillRect(label_rect, label_background)
+            label_text = QColor("#06130f")
+            label_text.setAlpha(255 if selected else 205)
+            painter.setPen(label_text)
+            painter.drawText(
+                label_rect.adjusted(horizontal_padding, 0, -horizontal_padding, 0),
+                Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
             if selected:
                 painter.setBrush(QColor("white"))
                 painter.setPen(QPen(color, 2))
