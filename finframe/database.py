@@ -520,6 +520,57 @@ class Database:
             if annotation["status"] == "verified":
                 self._bump_dataset_revision(db)
 
+    def video_annotation_stats(self, video_id: str) -> dict[str, int]:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN a.status='verified' THEN 1 ELSE 0 END) AS verified,
+                          SUM(CASE WHEN a.status='pending' THEN 1 ELSE 0 END) AS pending,
+                          SUM(CASE WHEN a.status='rejected' THEN 1 ELSE 0 END) AS rejected,
+                          COUNT(DISTINCT a.frame_id) AS frames
+                   FROM annotations a JOIN frames f ON f.id=a.frame_id
+                   WHERE f.video_id=?""",
+                (video_id,),
+            ).fetchone()
+        return {key: int(row[key] or 0) for key in ("total", "verified", "pending", "rejected", "frames")}
+
+    def clear_video_annotations(self, video_id: str) -> dict[str, int]:
+        """Delete every box for one video and invalidate only frames that contained boxes."""
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN a.status='verified' THEN 1 ELSE 0 END) AS verified,
+                          SUM(CASE WHEN a.status='pending' THEN 1 ELSE 0 END) AS pending,
+                          SUM(CASE WHEN a.status='rejected' THEN 1 ELSE 0 END) AS rejected,
+                          COUNT(DISTINCT a.frame_id) AS frames,
+                          COUNT(DISTINCT CASE WHEN f.training_selected=1 THEN f.id END) AS training_frames
+                   FROM annotations a JOIN frames f ON f.id=a.frame_id
+                   WHERE f.video_id=?""",
+                (video_id,),
+            ).fetchone()
+            result = {
+                key: int(row[key] or 0)
+                for key in ("total", "verified", "pending", "rejected", "frames", "training_frames")
+            }
+            if not result["total"]:
+                return result
+            db.execute(
+                """UPDATE frames SET reviewed=0,training_selected=0,training_reason='',updated_at=?
+                   WHERE video_id=? AND EXISTS (
+                       SELECT 1 FROM annotations a WHERE a.frame_id=frames.id
+                   )""",
+                (utc_now(), video_id),
+            )
+            db.execute(
+                "DELETE FROM annotations WHERE frame_id IN (SELECT id FROM frames WHERE video_id=?)",
+                (video_id,),
+            )
+            if result["verified"]:
+                self._bump_dataset_revision(db)
+            if result["training_frames"]:
+                self._bump_training_revision(db)
+        return result
+
     def delete_pending_proposals(
         self,
         video_id: str,

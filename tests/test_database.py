@@ -114,6 +114,41 @@ class DatabaseWorkflowTests(unittest.TestCase):
         self.assertGreater(second, first)
         self.assertGreater(third, second)
 
+    def test_clear_video_annotations_is_scoped_and_invalidates_affected_frames(self):
+        verified = self.add(0, 10)
+        self.add(1, 20, "pending", "tracker")
+        rejected = self.add(0, 30, "pending", "ai")
+        self.db.review_annotation(rejected["id"], "reject")
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        self.db.set_frame_reviewed(self.video["id"], 40, True)
+        other_video = self.db.add_video(
+            self.project["id"], Path(self.temp.name) / "other.mp4",
+            duration=1, width=640, height=360, fps=25, frame_count=25,
+        )
+        other = self.db.add_annotation(
+            video_id=other_video["id"], frame_number=0, time_seconds=0,
+            species_id=self.species[0]["id"], track_id="OTHER-001",
+            box=(.1, .1, .2, .2), status="verified", source="manual",
+        )
+
+        self.assertEqual(self.db.video_annotation_stats(self.video["id"])["total"], 3)
+        result = self.db.clear_video_annotations(self.video["id"])
+
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["verified"], 1)
+        self.assertEqual(result["pending"], 1)
+        self.assertEqual(result["rejected"], 1)
+        for frame_number in (10, 20, 30):
+            self.assertEqual(
+                self.db.annotations_for_frame(self.video["id"], frame_number, include_rejected=True),
+                [],
+            )
+        self.assertFalse(self.db.get_frame(self.video["id"], 10)["reviewed"])
+        self.assertTrue(self.db.get_frame(self.video["id"], 40)["reviewed"])
+        self.assertEqual(self.db.get_annotation(other["id"])["video_id"], other_video["id"])
+        with self.assertRaises(KeyError):
+            self.db.get_annotation(verified["id"])
+
     def test_project_backup_import_adds_verified_labels_to_shared_database(self):
         self.add(0, 10)
         self.add(1, 20, "pending", "ai")

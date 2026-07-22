@@ -3,13 +3,14 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
 from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from finframe.database import Database
 from finframe.main_window import MainWindow, PlaybackWorker
@@ -213,6 +214,42 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertEqual(worker.error_message, "")
             self.assertEqual(worker.last_frame, 11)
             self.assertEqual(len(db.annotations_for_frame(video["id"], 1)), 1)
+            window.close()
+
+    def test_clear_all_video_boxes_action_removes_only_the_selected_video_boxes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "clear-boxes.avi"
+            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 25, (48, 32))
+            if not writer.isOpened():
+                self.skipTest("MJPG VideoWriter is unavailable")
+            for _ in range(2):
+                writer.write(np.full((32, 48, 3), 80, dtype=np.uint8))
+            writer.release()
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Clear boxes")
+            video = db.add_video(
+                project["id"], path, duration=.08, width=48, height=32,
+                fps=25, frame_count=2, media_type="video"
+            )
+            species = db.list_species()[0]
+            db.add_annotation(
+                video_id=video["id"], frame_number=0, time_seconds=0,
+                species_id=species["id"], track_id="FISH-001", box=(.1, .1, .2, .2),
+                status="verified", source="manual",
+            )
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(window.video_combo.findData(video["id"]))
+            self.app.processEvents()
+
+            self.assertTrue(window.clear_video_boxes_button.isEnabled())
+            with patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                window.clear_all_video_boxes()
+
+            self.assertEqual(db.video_annotation_stats(video["id"])["total"], 0)
+            self.assertEqual(window.annotation_table.rowCount(), 0)
+            self.assertEqual(window.maxn_table.rowCount(), 0)
             window.close()
 
     def test_main_window_can_change_speed_and_pause_during_playback(self):

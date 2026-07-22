@@ -480,8 +480,9 @@ class MainWindow(QMainWindow):
         self.save_annotation_button.clicked.connect(self.save_annotation_changes)
         self.approve_button = QPushButton("Approve proposal")
         self.approve_button.clicked.connect(self.approve_annotation)
-        self.reject_button = QPushButton("Reject proposal")
+        self.reject_button = QPushButton("Reject + stop track")
         self.reject_button.clicked.connect(self.reject_annotation)
+        self.reject_button.setToolTip("Reject this proposal and stop propagating its track")
         self.approve_frame_button = QPushButton("Approve all unchanged proposals on frame")
         self.approve_frame_button.clicked.connect(self.approve_frame_proposals)
         next_pending_button = QPushButton("Next pending frame")
@@ -490,6 +491,11 @@ class MainWindow(QMainWindow):
         self.approve_segment_button.clicked.connect(self.approve_watched_segment)
         delete_button = QPushButton("Delete")
         delete_button.clicked.connect(self.delete_annotation)
+        self.clear_video_boxes_button = QPushButton("Clear all boxes from this video")
+        self.clear_video_boxes_button.setObjectName("dangerButton")
+        self.clear_video_boxes_button.setToolTip("Permanently delete every bounding box from the selected video")
+        self.clear_video_boxes_button.setEnabled(False)
+        self.clear_video_boxes_button.clicked.connect(self.clear_all_video_boxes)
         action_row.addWidget(self.save_annotation_button, 0, 0, 1, 2)
         action_row.addWidget(self.approve_button, 1, 0)
         action_row.addWidget(self.reject_button, 1, 1)
@@ -497,6 +503,7 @@ class MainWindow(QMainWindow):
         action_row.addWidget(next_pending_button, 3, 0, 1, 2)
         action_row.addWidget(self.approve_segment_button, 4, 0, 1, 2)
         action_row.addWidget(delete_button, 5, 0, 1, 2)
+        action_row.addWidget(self.clear_video_boxes_button, 6, 0, 1, 2)
         annotation_layout.addLayout(action_row)
         splitter.addWidget(self.annotation_panel)
         splitter.setSizes([240, 900, 330])
@@ -565,6 +572,8 @@ class MainWindow(QMainWindow):
             QPushButton { background: #e5eee9; border: 1px solid #b7cbc2; border-radius: 6px; padding: 7px 10px; }
             QPushButton:hover { background: #d6e7df; }
             QPushButton:disabled { color: #82918b; background: #edf1ef; }
+            QPushButton#dangerButton { color: #8f2f25; background: #fff2ef; border-color: #dca69f; }
+            QPushButton#dangerButton:hover { background: #ffe4de; }
             QLineEdit, QComboBox, QSpinBox, QTextEdit { background: white; border: 1px solid #b8c8c1; border-radius: 5px; padding: 5px; }
             QTableWidget, QListWidget { background: white; border: 1px solid #cbd8d2; alternate-background-color: #f4f8f6; }
             QHeaderView::section { background: #e8efeb; padding: 5px; border: 0; border-bottom: 1px solid #bdccc5; }
@@ -893,6 +902,9 @@ class MainWindow(QMainWindow):
         self.playback_speed.setEnabled(playable)
         self.seed_tracking_checkbox.setEnabled(playable and not playing)
         self.approve_segment_button.setEnabled(playable and not playing)
+        self.clear_video_boxes_button.setEnabled(
+            bool(self.current_video and self.current_video.get("media_type") == "video") and not playing
+        )
         self.previous_button.setText("◀ Image" if is_image else "◀ Frame")
         self.following_button.setText("Image ▶" if is_image else "Frame ▶")
         self.previous_button.setEnabled(playable or (is_image and self._adjacent_image_index(-1) is not None))
@@ -1368,6 +1380,52 @@ class MainWindow(QMainWindow):
         self.refresh_frame_annotations()
         if annotation["status"] == "verified":
             self.training.maybe_schedule("verified annotation deleted")
+
+    def clear_all_video_boxes(self) -> None:
+        if not self.current_video or self.current_video.get("media_type") != "video":
+            return
+        if self.tracking_worker and self.tracking_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Tracking in progress",
+                "Wait for whole-video tracking to finish before clearing its boxes.",
+            )
+            return
+        if self.training.status()["running"]:
+            QMessageBox.information(
+                self,
+                "Training in progress",
+                "Wait for the current training run to finish before changing the training dataset.",
+            )
+            return
+        stats = self.db.video_annotation_stats(self.current_video["id"])
+        if not stats["total"]:
+            QMessageBox.information(self, "No boxes to clear", "This video has no bounding boxes.")
+            return
+        if QMessageBox.question(
+            self,
+            "Clear every box from this video?",
+            f"Permanently delete all {stats['total']:,} bounding boxes from {self.current_video['file_name']}?\n\n"
+            f"This includes {stats['verified']:,} verified, {stats['pending']:,} pending and "
+            f"{stats['rejected']:,} rejected boxes across {stats['frames']:,} frames. Affected frames will be "
+            "marked incomplete and removed from MaxN and future training datasets. Other videos are unchanged.\n\n"
+            "Existing trained model files are not changed. This action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.stop_playback(refresh=False)
+        self.seed_tracking.clear()
+        self.selected_annotation_id = None
+        self.review_segment_start = None
+        deleted = self.db.clear_video_annotations(self.current_video["id"])
+        self._refresh_seed_tracking_status()
+        self.refresh_frame_annotations()
+        self.refresh_training_status()
+        self.statusBar().showMessage(
+            f"Cleared {deleted['total']:,} boxes from {self.current_video['file_name']}",
+            8000,
+        )
 
     def _add_proposals(self, proposals: list[dict[str, Any]], source: str) -> int:
         if not self.current_video:
