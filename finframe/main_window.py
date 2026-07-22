@@ -199,8 +199,11 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Project")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        toolbar.addWidget(QLabel("  Project  "))
+        project_label = QLabel("Project")
+        project_label.setObjectName("toolbarSectionLabel")
+        toolbar.addWidget(project_label)
         self.project_combo = QComboBox()
+        self.project_combo.setObjectName("toolbarSelector")
         self.project_combo.setMinimumWidth(260)
         self.project_combo.currentIndexChanged.connect(self.project_changed)
         toolbar.addWidget(self.project_combo)
@@ -211,8 +214,11 @@ class MainWindow(QMainWindow):
         edit_project.triggered.connect(self.edit_project)
         toolbar.addAction(edit_project)
         toolbar.addSeparator()
-        toolbar.addWidget(QLabel("  Media  "))
+        media_label = QLabel("Media")
+        media_label.setObjectName("toolbarSectionLabel")
+        toolbar.addWidget(media_label)
         self.video_combo = QComboBox()
+        self.video_combo.setObjectName("toolbarSelector")
         self.video_combo.setMinimumWidth(300)
         self.video_combo.currentIndexChanged.connect(self.video_changed)
         toolbar.addWidget(self.video_combo)
@@ -420,8 +426,16 @@ class MainWindow(QMainWindow):
     def _apply_style(self) -> None:
         self.setStyleSheet("""
             QMainWindow, QWidget { background: #f4f6f3; color: #14251f; font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; }
-            QToolBar { background: #102a22; color: white; spacing: 8px; padding: 6px; border: 0; }
-            QToolBar QLabel { color: #d7e5df; }
+            QToolBar { background: #102a22; color: #f4fbf8; spacing: 7px; padding: 6px 8px; border: 0; }
+            QToolBar QLabel#toolbarSectionLabel { color: #d7e5df; background: transparent; font-weight: 700; padding: 0 3px; }
+            QToolBar QComboBox#toolbarSelector { background: #f8fbf9; color: #14251f; border: 1px solid #86a79a; border-radius: 5px; padding: 5px 26px 5px 8px; }
+            QToolBar QComboBox#toolbarSelector:hover { border-color: #70c3a6; background: white; }
+            QToolBar QComboBox#toolbarSelector:focus { border: 2px solid #41a88a; padding: 4px 25px 4px 7px; }
+            QToolBar QComboBox#toolbarSelector QAbstractItemView { background: white; color: #14251f; selection-background-color: #d6e7df; selection-color: #14251f; }
+            QToolBar QToolButton { background: transparent; color: #eef8f4; border: 1px solid transparent; border-radius: 5px; padding: 6px 8px; }
+            QToolBar QToolButton:hover { background: #1d493c; border-color: #467466; }
+            QToolBar QToolButton:pressed { background: #28614f; }
+            QToolBar::separator { background: #41665a; width: 1px; margin: 4px 3px; }
             QGroupBox { font-weight: 700; border: 1px solid #cbd8d2; border-radius: 8px; margin-top: 10px; padding-top: 12px; background: white; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
             QPushButton { background: #e5eee9; border: 1px solid #b7cbc2; border-radius: 6px; padding: 7px 10px; }
