@@ -44,6 +44,34 @@ class DatabaseWorkflowTests(unittest.TestCase):
         self.assertEqual(self.db.next_pending_frame(self.video["id"], 20), 40)
         self.assertEqual(self.db.next_pending_frame(self.video["id"], 40), 20)
 
+    def test_playback_tracker_proposals_are_inserted_once_per_frame_batch(self):
+        proposals = [
+            {
+                "species_id": self.species[0]["id"],
+                "track_id": "FISH-001",
+                "box": (.1, .1, .2, .2),
+                "life_stage": "Adult",
+                "activity": "Passing",
+            },
+            {
+                "species_id": self.species[1]["id"],
+                "track_id": "FISH-002",
+                "box": (.4, .2, .2, .2),
+            },
+        ]
+        added = self.db.add_pending_tracker_annotations(
+            self.video["id"], 12, .48, proposals, created_by="Student One"
+        )
+        repeated = self.db.add_pending_tracker_annotations(
+            self.video["id"], 12, .48, proposals, created_by="Student One"
+        )
+
+        annotations = self.db.annotations_for_frame(self.video["id"], 12)
+        self.assertEqual(added, 2)
+        self.assertEqual(repeated, 0)
+        self.assertEqual({item["track_id"] for item in annotations}, {"FISH-001", "FISH-002"})
+        self.assertTrue(all(item["status"] == "pending" and item["source"] == "tracker" for item in annotations))
+
     def test_detector_rerun_preserves_pending_box_seed_proposals(self):
         seed = self.add(0, 10, "pending", "tracker")
         model = self.db.register_model("detector.pt", 0.5, 20, "training-run")

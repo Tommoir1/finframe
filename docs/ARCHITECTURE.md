@@ -3,7 +3,7 @@
 ```text
 PySide6 student interface
         |
-        +-- OpenCV image/video/frame reader and 0.5×–6× playback
+        +-- Background OpenCV image/video reader and responsive 0.5×–6× playback
         +-- Default box-seeded CSRT/KCF/MIL propagation
         +-- SQLite project and annotation repository
         +-- Complete-frame MaxN queries
@@ -18,6 +18,8 @@ PySide6 student interface
 SQLite is the source of truth for projects, image/video media, species, frames, annotations, training runs, model versions and application settings. Original source media remain external files. Frames arriving in student contribution bundles are copied into managed storage under the receiving FinFrame data directory.
 
 All database methods use short independent connections with foreign keys, WAL mode and a busy timeout. This supports UI and background-training threads within one workstation process.
+
+Video decoding and seeded tracker updates run in a dedicated playback thread. Tracker proposals for one frame are written in a single SQLite transaction, video-frame UI refreshes omit the expensive MaxN query, and MaxN is refreshed when playback pauses. High-speed playback may skip display frames only when no seeded tracker is active; seeded tracking always consumes sequential frames.
 
 ## Human review boundary
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import cv2
@@ -168,6 +170,124 @@ class TrackingWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class PlaybackWorker(QThread):
+    """Decode video and propagate seeded boxes without blocking the Qt event loop."""
+
+    frame_ready = Signal(int, object)
+    tracking_status = Signal(str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        db: Database,
+        video: dict[str, Any],
+        start_frame: int,
+        speed: float,
+        seed_tracking: SeedTrackingSession,
+        created_by: str,
+    ):
+        super().__init__()
+        self.db = db
+        self.video = video
+        self.start_frame = int(start_frame)
+        self.seed_tracking = seed_tracking
+        self.created_by = created_by
+        self._stop_event = threading.Event()
+        self._speed_lock = threading.Lock()
+        self._speed = max(0.1, float(speed))
+        self.last_frame = self.start_frame
+        self.last_image: Any | None = None
+        self.error_message = ""
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def set_speed(self, speed: float) -> None:
+        with self._speed_lock:
+            self._speed = max(0.1, float(speed))
+
+    def speed(self) -> float:
+        with self._speed_lock:
+            return self._speed
+
+    def run(self) -> None:
+        capture = cv2.VideoCapture(self.video["path"])
+        try:
+            if not capture.isOpened():
+                raise RuntimeError("OpenCV could not open the video for playback")
+            frame_number = self.start_frame + 1
+            frame_count = max(0, int(self.video["frame_count"]))
+            fps = max(0.001, float(self.video["fps"]))
+            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            last_emitted_at = 0.0
+            frame_credit = 0.0
+            while frame_number < frame_count and not self._stop_event.is_set():
+                iteration_started = perf_counter()
+                ok, image = capture.read()
+                if not ok:
+                    break
+                self.last_frame = frame_number
+                self.last_image = image
+
+                ended = []
+                if self.seed_tracking.active_count:
+                    predictions, ended = self.seed_tracking.update(image, frame_number)
+                    self.db.add_pending_tracker_annotations(
+                        self.video["id"],
+                        frame_number,
+                        frame_number / fps,
+                        ({
+                            "species_id": prediction.species_id,
+                            "track_id": prediction.track_id,
+                            "box": prediction.box,
+                            "life_stage": prediction.life_stage,
+                            "activity": prediction.activity,
+                            "uncertain": prediction.uncertain,
+                        } for prediction in predictions),
+                        created_by=self.created_by,
+                    )
+                exited = sum(item.reason == "left_frame" for item in ended)
+                if exited:
+                    self.tracking_status.emit(
+                        f"{exited} track{'s' if exited != 1 else ''} ended at the frame boundary; any return will receive a new identity"
+                    )
+                elif ended:
+                    self.tracking_status.emit(
+                        f"{len(ended)} uncertain track{'s' if len(ended) != 1 else ''} stopped"
+                    )
+
+                now = perf_counter()
+                if now - last_emitted_at >= 1 / 30 or frame_number == frame_count - 1:
+                    self.frame_ready.emit(frame_number, image)
+                    last_emitted_at = now
+
+                speed = self.speed()
+                if self.seed_tracking.active_count or speed < 1:
+                    step = 1
+                    target_seconds = 1 / (fps * speed)
+                else:
+                    frame_credit += speed
+                    step = max(1, int(frame_credit))
+                    frame_credit -= step
+                    target_seconds = 1 / fps
+                if frame_number >= frame_count - 1:
+                    break
+                next_frame = min(frame_count - 1, frame_number + step)
+                for _ in range(max(0, next_frame - frame_number - 1)):
+                    if not capture.grab():
+                        next_frame = frame_count
+                        break
+                frame_number = next_frame
+                remaining = target_seconds - (perf_counter() - iteration_started)
+                if remaining > 0:
+                    self._stop_event.wait(remaining)
+        except Exception as exc:
+            self.error_message = str(exc)
+            self.failed.emit(self.error_message)
+        finally:
+            capture.release()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database, data_dir: Path, *, show_startup_prompt: bool = True):
         super().__init__()
@@ -183,6 +303,7 @@ class MainWindow(QMainWindow):
         self.selected_annotation_id: str | None = None
         self.review_segment_start: int | None = None
         self.tracking_worker: TrackingWorker | None = None
+        self.playback_worker: PlaybackWorker | None = None
         self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
         self.resize(1480, 920)
@@ -270,13 +391,13 @@ class MainWindow(QMainWindow):
         self.play_button = QPushButton("▶")
         self.play_button.clicked.connect(self.toggle_playback)
         self.previous_button = QPushButton("◀ Frame")
-        self.previous_button.clicked.connect(lambda: self.seek_frame(self.current_frame - 1))
+        self.previous_button.clicked.connect(lambda: self.navigate_relative(-1))
         self.following_button = QPushButton("Frame ▶")
-        self.following_button.clicked.connect(lambda: self.seek_frame(self.current_frame + 1))
+        self.following_button.clicked.connect(lambda: self.navigate_relative(1))
         self.back_button = QPushButton("−5 s")
-        self.back_button.clicked.connect(lambda: self.seek_frame(self.current_frame - round(self._fps() * 5)))
+        self.back_button.clicked.connect(lambda: self.seek_video_relative(-round(self._fps() * 5)))
         self.forward_button = QPushButton("+5 s")
-        self.forward_button.clicked.connect(lambda: self.seek_frame(self.current_frame + round(self._fps() * 5)))
+        self.forward_button.clicked.connect(lambda: self.seek_video_relative(round(self._fps() * 5)))
         self.timeline = QSlider(Qt.Orientation.Horizontal)
         self.timeline.valueChanged.connect(self.seek_frame)
         self.frame_label = QLabel("Frame 0 · 00:00.000")
@@ -319,8 +440,8 @@ class MainWindow(QMainWindow):
         video_layout.addLayout(ai_controls)
         splitter.addWidget(video_panel)
 
-        annotation_panel = QGroupBox("Frame annotations")
-        annotation_layout = QVBoxLayout(annotation_panel)
+        self.annotation_panel = QGroupBox("Frame annotations")
+        annotation_layout = QVBoxLayout(self.annotation_panel)
         self.frame_counts = QLabel("Verified fish: 0")
         self.frame_complete = QCheckBox("Frame complete — all visible fish are boxed")
         self.frame_complete.toggled.connect(self.frame_complete_toggled)
@@ -372,7 +493,7 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.approve_segment_button, 4, 0, 1, 2)
         action_row.addWidget(delete_button, 5, 0, 1, 2)
         annotation_layout.addLayout(action_row)
-        splitter.addWidget(annotation_panel)
+        splitter.addWidget(self.annotation_panel)
         splitter.setSizes([240, 900, 330])
 
         tabs = QTabWidget()
@@ -416,8 +537,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
-        self.play_timer = QTimer(self)
-        self.play_timer.timeout.connect(self.advance_playback)
         delete_shortcut = QAction(self)
         delete_shortcut.setShortcut(QKeySequence.StandardKey.Delete)
         delete_shortcut.triggered.connect(self.delete_annotation)
@@ -452,6 +571,7 @@ class MainWindow(QMainWindow):
         """)
 
     def closeEvent(self, event: Any) -> None:
+        self.stop_playback(refresh=False)
         if self.capture:
             self.capture.release()
         event.accept()
@@ -542,6 +662,7 @@ class MainWindow(QMainWindow):
         self.refresh_projects(self.current_project["id"])
 
     def project_changed(self, index: int) -> None:
+        self.stop_playback(refresh=False)
         project_id = self.project_combo.itemData(index)
         self.current_project = self.db.get_project(project_id) if project_id else None
         self.refresh_videos()
@@ -555,6 +676,11 @@ class MainWindow(QMainWindow):
             for video in videos:
                 kind = "Image" if video.get("media_type") == "image" else "Video"
                 self.video_combo.addItem(f"[{kind}] {video['file_name']}", video["id"])
+                self.video_combo.setItemData(
+                    self.video_combo.count() - 1,
+                    video.get("media_type", "video"),
+                    Qt.ItemDataRole.UserRole + 1,
+                )
             if select_id:
                 self.video_combo.setCurrentIndex(max(0, self.video_combo.findData(select_id)))
         if select_id:
@@ -642,7 +768,7 @@ class MainWindow(QMainWindow):
     def _import_images(self, paths: Sequence[str | Path]) -> None:
         if not self.current_project:
             return
-        last_id = None
+        first_id = None
         unreadable = []
         for path in paths:
             image_path = Path(path).expanduser().resolve()
@@ -663,9 +789,10 @@ class MainWindow(QMainWindow):
             )
             self.db.ensure_frame(media["id"], 0, 0)
             self.db.update_frame(media["id"], 0, image_path=image_path)
-            last_id = media["id"]
-        if last_id:
-            self.refresh_videos(last_id)
+            if first_id is None:
+                first_id = media["id"]
+        if first_id:
+            self.refresh_videos(first_id)
             self.statusBar().showMessage(
                 f"Added {len(paths) - len(unreadable):,} image{'s' if len(paths) - len(unreadable) != 1 else ''}",
                 5000,
@@ -674,6 +801,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Some images were skipped", "OpenCV could not read:\n" + "\n".join(unreadable))
 
     def video_changed(self, index: int) -> None:
+        self.stop_playback(refresh=False)
         video_id = self.video_combo.itemData(index)
         if not video_id:
             return
@@ -744,27 +872,59 @@ class MainWindow(QMainWindow):
             and self.capture
             and self.capture.isOpened()
         )
+        is_image = bool(self.current_video and self.current_video.get("media_type") == "image")
+        playing = bool(self.playback_worker and self.playback_worker.isRunning())
         for control in (
             self.play_button,
-            self.previous_button,
-            self.following_button,
             self.back_button,
             self.forward_button,
-            self.playback_speed,
             self.timeline,
-            self.seed_tracking_checkbox,
             self.byte_button,
             self.bot_button,
         ):
-            control.setEnabled(playable)
-        self.approve_segment_button.setEnabled(playable)
+            control.setEnabled(playable and (control is self.play_button or not playing))
+        self.playback_speed.setEnabled(playable)
+        self.seed_tracking_checkbox.setEnabled(playable and not playing)
+        self.approve_segment_button.setEnabled(playable and not playing)
+        self.previous_button.setText("◀ Image" if is_image else "◀ Frame")
+        self.following_button.setText("Image ▶" if is_image else "Frame ▶")
+        self.previous_button.setEnabled(playable or (is_image and self._adjacent_image_index(-1) is not None))
+        self.following_button.setEnabled(playable or (is_image and self._adjacent_image_index(1) is not None))
+        self.canvas.setEnabled(not playing)
+        self.annotation_panel.setEnabled(not playing)
 
-    def seek_frame(self, frame_number: int, propagate_seeded: bool = False) -> None:
+    def _adjacent_image_index(self, direction: int) -> int | None:
+        index = self.video_combo.currentIndex() + (1 if direction > 0 else -1)
+        while 0 <= index < self.video_combo.count():
+            media_type = self.video_combo.itemData(index, Qt.ItemDataRole.UserRole + 1)
+            if media_type == "image":
+                return index
+            index += 1 if direction > 0 else -1
+        return None
+
+    def navigate_relative(self, direction: int) -> None:
         if not self.current_video:
             return
+        if self.current_video.get("media_type") == "image":
+            target = self._adjacent_image_index(direction)
+            if target is not None:
+                self.video_combo.setCurrentIndex(target)
+            return
+        self.stop_playback(refresh=False)
+        self.seek_frame(self.current_frame + direction)
+
+    def seek_video_relative(self, frames: int) -> None:
+        self.stop_playback(refresh=False)
+        self.seek_frame(self.current_frame + frames)
+
+    def seek_frame(self, frame_number: int) -> None:
+        if not self.current_video:
+            return
+        if self.playback_worker and self.playback_worker.isRunning():
+            self.stop_playback(refresh=False)
         frame_number = max(0, min(int(self.current_video["frame_count"]) - 1, int(frame_number)))
         previous_frame = self.current_frame
-        if not propagate_seeded and self.current_image is not None and frame_number != previous_frame:
+        if self.current_image is not None and frame_number != previous_frame:
             self.seed_tracking.clear()
             self.review_segment_start = None
             self._refresh_seed_tracking_status("Propagation stopped after seeking")
@@ -789,14 +949,15 @@ class MainWindow(QMainWindow):
             if frame.get("image_path") and Path(frame["image_path"]).is_file():
                 image = cv2.imread(frame["image_path"])
         if image is None:
-            self.play_timer.stop()
+            self.stop_playback(refresh=False)
             self.play_button.setText("▶")
             self.statusBar().showMessage("This frame is unavailable; relink the full source video to browse unannotated frames", 8000)
             return
+        self._display_frame(frame_number, image, refresh_maxn=True)
+
+    def _display_frame(self, frame_number: int, image: Any, *, refresh_maxn: bool) -> None:
         self.current_frame = frame_number
         self.current_image = image
-        if propagate_seeded and frame_number == previous_frame + 1:
-            self._propagate_seeded_boxes(image, frame_number)
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         qimage = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
@@ -805,42 +966,74 @@ class MainWindow(QMainWindow):
             self.timeline.setValue(frame_number)
         seconds = frame_number / max(0.001, self._fps())
         self.frame_label.setText(f"Frame {frame_number:,} · {self._timecode(seconds)}")
-        self.refresh_frame_annotations()
-
-    def advance_playback(self) -> None:
-        if not self.current_video or self.current_video.get("media_type") != "video":
-            return
-        if self.current_frame >= int(self.current_video["frame_count"]) - 1:
-            self.play_timer.stop()
-            self.play_button.setText("▶")
-            return
-        self.seek_frame(
-            self.current_frame + 1,
-            propagate_seeded=self.seed_tracking_checkbox.isChecked(),
-        )
+        self.refresh_frame_annotations(refresh_maxn=refresh_maxn)
 
     def toggle_playback(self) -> None:
         if not self.current_video or self.current_video.get("media_type") != "video" or not self.capture:
             return
-        if self.play_timer.isActive():
-            self.play_timer.stop()
-            self.play_button.setText("▶")
-        else:
-            if self.review_segment_start is None:
-                self.review_segment_start = self.current_frame
-            if self.seed_tracking_checkbox.isChecked():
-                self._seed_current_frame_annotations()
-            self.play_timer.start(self._playback_interval())
-            self.play_button.setText("Ⅱ")
+        if self.playback_worker and self.playback_worker.isRunning():
+            self.stop_playback(refresh=True)
+            return
+        if self.current_frame >= int(self.current_video["frame_count"]) - 1:
+            self.seek_frame(0)
+        if self.review_segment_start is None:
+            self.review_segment_start = self.current_frame
+        if self.seed_tracking_checkbox.isChecked():
+            self._seed_current_frame_annotations()
+        worker = PlaybackWorker(
+            self.db,
+            self.current_video,
+            self.current_frame,
+            float(self.playback_speed.currentData() or 1),
+            self.seed_tracking,
+            self.current_project.get("observer", "") if self.current_project else "",
+        )
+        worker.frame_ready.connect(self.playback_frame_ready)
+        worker.tracking_status.connect(lambda message: self._refresh_seed_tracking_status(message))
+        worker.failed.connect(lambda message: self.statusBar().showMessage(f"Playback stopped: {message}", 8000))
+        worker.finished.connect(self.playback_finished)
+        self.playback_worker = worker
+        self.play_button.setText("Ⅱ")
+        self._configure_media_controls()
+        worker.start()
 
-    def _playback_interval(self) -> int:
-        speed = float(self.playback_speed.currentData() or 1)
-        return max(1, round(1000 / max(1.0, self._fps() * speed)))
+    def playback_frame_ready(self, frame_number: int, image: Any) -> None:
+        worker = self.sender()
+        if worker is None or worker is not self.playback_worker or not self.current_video:
+            return
+        self._display_frame(frame_number, image, refresh_maxn=False)
+
+    def playback_finished(self) -> None:
+        worker = self.sender()
+        if worker is None or worker is not self.playback_worker:
+            return
+        if worker.last_image is not None and worker.last_frame >= self.current_frame:
+            self._display_frame(worker.last_frame, worker.last_image, refresh_maxn=True)
+        self.playback_worker = None
+        self.play_button.setText("▶")
+        self._configure_media_controls()
+        self._refresh_seed_tracking_status()
+
+    def stop_playback(self, *, refresh: bool) -> None:
+        worker = self.playback_worker
+        if worker is None:
+            return
+        if worker.isRunning():
+            worker.stop()
+            worker.wait()
+        if worker.last_image is not None and worker.last_frame >= self.current_frame:
+            self._display_frame(worker.last_frame, worker.last_image, refresh_maxn=refresh)
+        elif refresh and self.current_video:
+            self.refresh_frame_annotations()
+        self.playback_worker = None
+        self.play_button.setText("▶")
+        self._configure_media_controls()
+        self._refresh_seed_tracking_status()
 
     def playback_speed_changed(self) -> None:
-        if self.play_timer.isActive():
-            self.play_timer.start(self._playback_interval())
         speed = float(self.playback_speed.currentData() or 1)
+        if self.playback_worker and self.playback_worker.isRunning():
+            self.playback_worker.set_speed(speed)
         self.statusBar().showMessage(f"Playback speed set to {speed:g}×", 3000)
 
     def seed_tracking_toggled(self, enabled: bool) -> None:
@@ -883,39 +1076,6 @@ class MainWindow(QMainWindow):
             return
         for annotation in self.db.annotations_for_frame(self.current_video["id"], self.current_frame):
             self._seed_annotation(annotation)
-
-    def _propagate_seeded_boxes(self, image: Any, frame_number: int) -> None:
-        if not self.current_video or not self.seed_tracking.active_count:
-            return
-        predictions, ended = self.seed_tracking.update(image, frame_number)
-        existing = self.db.annotations_for_frame(self.current_video["id"], frame_number)
-        existing_tracks = {item["track_id"] for item in existing}
-        for prediction in predictions:
-            if prediction.track_id in existing_tracks:
-                continue
-            self.db.add_annotation(
-                video_id=self.current_video["id"],
-                frame_number=frame_number,
-                time_seconds=frame_number / max(0.001, self._fps()),
-                species_id=prediction.species_id,
-                track_id=prediction.track_id,
-                box=prediction.box,
-                status="pending",
-                source="tracker",
-                confidence=None,
-                model_id=None,
-                created_by=self.current_project.get("observer", "") if self.current_project else "",
-                life_stage=prediction.life_stage,
-                activity=prediction.activity,
-                uncertain=prediction.uncertain,
-            )
-        exited = sum(item.reason == "left_frame" for item in ended)
-        message = None
-        if exited:
-            message = f"{exited} track{'s' if exited != 1 else ''} ended at the frame boundary; any return will receive a new identity"
-        elif ended:
-            message = f"{len(ended)} uncertain track{'s' if len(ended) != 1 else ''} stopped"
-        self._refresh_seed_tracking_status(message)
 
     def refresh_species(self) -> None:
         query = self.species_search.text().strip().lower() if hasattr(self, "species_search") else ""
@@ -1014,7 +1174,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Frame is not complete", str(exc))
         self.refresh_frame_annotations()
 
-    def refresh_frame_annotations(self) -> None:
+    def refresh_frame_annotations(self, *, refresh_maxn: bool = True) -> None:
         if not self.current_video:
             self.canvas.set_annotations([])
             return
@@ -1054,7 +1214,8 @@ class MainWindow(QMainWindow):
         completeness = "complete" if frame["reviewed"] else "incomplete"
         self.frame_counts.setText(f"Verified fish: {verified_count} · Pending proposals: {pending_count} · {completeness}")
         self.approve_frame_button.setEnabled(pending_count > 0)
-        self.refresh_maxn()
+        if refresh_maxn:
+            self.refresh_maxn()
 
     def annotation_selected(self) -> None:
         rows = self.annotation_table.selectionModel().selectedRows()

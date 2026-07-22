@@ -11,7 +11,7 @@ The application is local-first. Video remains on the workstation, while projects
 3. Add one or more source videos, choose multiple still-image files, or import an image folder including its subfolders.
 4. Select a species and draw a box around every visible fish on an observation frame or image.
 5. Mark the frame complete only after every visible fish is boxed. Only complete frames contribute to final MaxN.
-6. For video, optionally choose 0.5× through 6× playback and press Play. Every drawn box seeds a CPU tracker by default.
+6. For video, optionally choose 0.5× through 6× playback and press Play. Every drawn box seeds a CPU tracker by default. Playback decoding and tracking run in the background, so speed and navigation controls remain responsive.
 7. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
 8. Correct proposals while watching, then use **Approve watched segment** after checking that no fish were missed.
 9. FinFrame calculates per-species MaxN from all complete frames and keeps incomplete work visibly excluded.
@@ -24,8 +24,8 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 ## Desktop features
 
 - Native PySide6 desktop interface; no browser or separate local web server
-- First-class still-image annotation with multi-file and recursive folder import
-- OpenCV video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
+- First-class still-image annotation with multi-file and recursive folder import; Image arrows move through the imported photo set
+- Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
 - Default box-seeded propagation during playback, with corrected boxes re-seeding the tracker
 - Shared species taxonomy with search-as-you-type selection, scientific names, stable codes and track IDs
@@ -56,6 +56,8 @@ Approving an unchanged proposal records `ai_verified` or `tracker_verified`. Cha
 Approval operates at two levels. Box approval means that one proposed label is correct. Frame completion means that the student has checked the whole image and boxed every visible fish. A frame cannot be completed while any proposal on it is pending. Editing a complete frame automatically makes it incomplete again so the changed observation must be reviewed.
 
 All complete frames can support MaxN, but using every tracked video frame for training would overweight near-identical images. FinFrame therefore always selects complete manual/corrected frames and samples unchanged tracker/AI frames at most once per second by default. Complete sampled frames with no fish are retained as negative training images. One selected frame containing five fish is one training image with five bounding-box labels; a tracker following those fish through 100 frames does not become 500 independent training examples.
+
+Playback speed is a target. Without active seeded boxes, FinFrame can skip display frames at high speed. While CPU box propagation is active it processes frames sequentially to preserve tracking accuracy, so older hardware may run below the selected 6× target; the interface remains responsive and proposals are still retained.
 
 Track IDs describe one uninterrupted period of visibility, not an inferred biological individual. When a tracked box reaches the image boundary and disappears, FinFrame permanently retires that identity. A fish entering later always receives a new identity. FinFrame does not attempt re-identification or suggest that a returning fish is the same individual. Brief missed detections away from the image boundary may retain the existing identity as an in-frame occlusion.
 
