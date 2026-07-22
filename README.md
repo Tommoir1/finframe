@@ -8,7 +8,7 @@ The application is local-first. Video remains on the workstation, while projects
 
 1. Choose **Annotate video**, **Annotate images**, or **Open existing project** at startup.
 2. Create a survey project and record deployment, site and observer metadata.
-3. Add one or more source videos or still images.
+3. Add one or more source videos, choose multiple still-image files, or import an image folder including its subfolders.
 4. Select a species and draw a box around every visible fish on an observation frame or image.
 5. Mark the frame complete only after every visible fish is boxed. Only complete frames contribute to final MaxN.
 6. For video, optionally choose 0.5× through 6× playback and press Play. Every drawn box seeds a CPU tracker by default.
@@ -24,7 +24,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 ## Desktop features
 
 - Native PySide6 desktop interface; no browser or separate local web server
-- First-class still-image annotation and multi-image import
+- First-class still-image annotation with multi-file and recursive folder import
 - OpenCV video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
 - Default box-seeded propagation during playback, with corrected boxes re-seeding the tracker

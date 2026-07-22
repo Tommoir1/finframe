@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,19 @@ from .dataset import (
 from .inference import InferenceEngine, InferenceError
 from .seed_tracking import SeedTrackingSession, SeedTrackingUnavailable
 from .training import TrainingCoordinator
+
+
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"})
+IMAGE_FILE_FILTER = "Image files (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp)"
+
+
+def discover_image_files(folder: str | Path) -> list[Path]:
+    """Return supported images in a folder and its subfolders in stable order."""
+    root = Path(folder).expanduser().resolve()
+    return sorted(
+        (path.resolve() for path in root.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES),
+        key=lambda path: str(path).casefold(),
+    )
 
 
 def _iou(first: dict[str, Any], second: tuple[float, float, float, float]) -> float:
@@ -205,8 +219,8 @@ class MainWindow(QMainWindow):
         add_video = QAction("Add video", self)
         add_video.triggered.connect(self.add_video)
         toolbar.addAction(add_video)
-        add_images = QAction("Add images", self)
-        add_images.triggered.connect(self.add_images)
+        add_images = QAction("Add images / folder", self)
+        add_images.triggered.connect(self.choose_image_source)
         toolbar.addAction(add_images)
         backup = QAction("Backup project", self)
         backup.triggered.connect(self.backup_project)
@@ -454,7 +468,7 @@ class MainWindow(QMainWindow):
         if not self._ensure_current_project():
             return
         if selected is image_button:
-            self.add_images()
+            self.choose_image_source()
         else:
             self.add_video()
 
@@ -551,6 +565,24 @@ class MainWindow(QMainWindow):
         video = self.db.add_video(self.current_project["id"], path, duration=frames / max(0.001, fps), width=width, height=height, fps=fps, frame_count=frames)
         self.refresh_videos(video["id"])
 
+    def choose_image_source(self) -> None:
+        if not self.current_project:
+            QMessageBox.information(self, "Create a project", "Create or select a survey project before adding images.")
+            return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Add survey images")
+        dialog.setText("Would you like to choose image files or import a folder?")
+        dialog.setInformativeText("Folder import includes supported images in all subfolders.")
+        files_button = dialog.addButton("Choose image files", QMessageBox.ButtonRole.ActionRole)
+        folder_button = dialog.addButton("Choose a folder", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.exec()
+        selected = dialog.clickedButton()
+        if selected is files_button:
+            self.add_images()
+        elif selected is folder_button:
+            self.add_image_folder()
+
     def add_images(self) -> None:
         if not self.current_project:
             QMessageBox.information(self, "Create a project", "Create or select a survey project before adding images.")
@@ -559,21 +591,55 @@ class MainWindow(QMainWindow):
             self,
             "Open survey images",
             "",
-            "Image files (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp)",
+            IMAGE_FILE_FILTER,
         )
         if not paths:
+            return
+        self._import_images(paths)
+
+    def add_image_folder(self) -> None:
+        if not self.current_project:
+            QMessageBox.information(self, "Create a project", "Create or select a survey project before adding images.")
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Choose a folder containing survey images",
+            "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not folder:
+            return
+        paths = discover_image_files(folder)
+        if not paths:
+            QMessageBox.information(
+                self,
+                "No supported images found",
+                "The selected folder and its subfolders contain no JPG, PNG, TIFF, BMP or WebP images.",
+            )
+            return
+        if QMessageBox.question(
+            self,
+            "Import image folder",
+            f"Import {len(paths):,} supported image{'s' if len(paths) != 1 else ''} from this folder and its subfolders?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._import_images(paths)
+
+    def _import_images(self, paths: Sequence[str | Path]) -> None:
+        if not self.current_project:
             return
         last_id = None
         unreadable = []
         for path in paths:
-            image = cv2.imread(path)
+            image_path = Path(path).expanduser().resolve()
+            image = cv2.imread(str(image_path))
             if image is None:
-                unreadable.append(Path(path).name)
+                unreadable.append(image_path.name)
                 continue
             height, width = image.shape[:2]
             media = self.db.add_video(
                 self.current_project["id"],
-                path,
+                image_path,
                 duration=0,
                 width=width,
                 height=height,
@@ -582,10 +648,14 @@ class MainWindow(QMainWindow):
                 media_type="image",
             )
             self.db.ensure_frame(media["id"], 0, 0)
-            self.db.update_frame(media["id"], 0, image_path=path)
+            self.db.update_frame(media["id"], 0, image_path=image_path)
             last_id = media["id"]
         if last_id:
             self.refresh_videos(last_id)
+            self.statusBar().showMessage(
+                f"Added {len(paths) - len(unreadable):,} image{'s' if len(paths) - len(unreadable) != 1 else ''}",
+                5000,
+            )
         if unreadable:
             QMessageBox.warning(self, "Some images were skipped", "OpenCV could not read:\n" + "\n".join(unreadable))
 
