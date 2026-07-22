@@ -26,13 +26,16 @@ class DatabaseWorkflowTests(unittest.TestCase):
         )
 
     def test_pending_ai_is_excluded_until_approved(self):
+        self.db.set_setting("training_sample_interval_seconds", 0)
         self.add(0, 10)
-        pending = self.add(0, 10, "pending", "ai")
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        pending = self.add(0, 20, "pending", "ai")
         self.assertEqual(self.db.frame_counts(self.video["id"], 10)[0]["count"], 1)
         self.assertEqual(self.db.training_stats()["examples"], 1)
         approved = self.db.review_annotation(pending["id"], "approve")
+        self.db.set_frame_reviewed(self.video["id"], 20, True)
         self.assertEqual(approved["source"], "ai_verified")
-        self.assertEqual(self.db.frame_counts(self.video["id"], 10)[0]["count"], 2)
+        self.assertEqual(self.db.frame_counts(self.video["id"], 20)[0]["count"], 1)
         self.assertEqual(self.db.training_stats()["examples"], 2)
 
     def test_pending_review_navigation_wraps_to_first_pending_frame(self):
@@ -67,29 +70,67 @@ class DatabaseWorkflowTests(unittest.TestCase):
         self.add(0, 20)
         self.add(0, 20)
         self.add(0, 30, "pending", "tracker")
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        self.db.set_frame_reviewed(self.video["id"], 20, True)
         summary = self.db.maxn_summary(self.video["id"])
         self.assertEqual(summary[0]["maxn"], 2)
         self.assertEqual(summary[0]["frame_number"], 20)
 
     def test_verified_edits_and_deletions_advance_dataset_revision(self):
         annotation = self.add(0, 10)
-        first = self.db.training_stats()["revision"]
+        first = self.db.training_stats()["verified_revision"]
         self.db.update_annotation(annotation["id"], width=0.3)
-        second = self.db.training_stats()["revision"]
+        second = self.db.training_stats()["verified_revision"]
         self.db.delete_annotation(annotation["id"])
-        third = self.db.training_stats()["revision"]
+        third = self.db.training_stats()["verified_revision"]
         self.assertGreater(second, first)
         self.assertGreater(third, second)
 
     def test_project_backup_import_adds_verified_labels_to_shared_database(self):
         self.add(0, 10)
         self.add(1, 20, "pending", "ai")
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
         snapshot = self.db.project_snapshot(self.project["id"])
         imported_db = Database(Path(self.temp.name) / "imported.sqlite3")
         imported = imported_db.import_project_snapshot(snapshot)
         self.assertEqual(imported_db.training_stats()["examples"], 1)
         self.assertEqual(imported_db.training_stats()["pending"], 1)
         self.assertEqual(len(imported_db.list_videos(imported["id"])), 1)
+
+    def test_incomplete_frames_do_not_enter_final_maxn(self):
+        self.add(0, 10)
+        self.add(0, 10)
+        self.add(0, 20)
+        self.db.set_frame_reviewed(self.video["id"], 20, True)
+        self.assertEqual(self.db.maxn_summary(self.video["id"])[0]["maxn"], 1)
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        self.assertEqual(self.db.maxn_summary(self.video["id"])[0]["maxn"], 2)
+
+    def test_complete_tracker_frames_are_temporally_sampled_for_training(self):
+        for frame_number in (0, 10, 30):
+            self.add(0, frame_number, "verified", "tracker_verified")
+            self.db.set_frame_reviewed(self.video["id"], frame_number, True)
+        first = self.db.get_frame(self.video["id"], 0)
+        near_duplicate = self.db.get_frame(self.video["id"], 10)
+        later = self.db.get_frame(self.video["id"], 30)
+        self.assertEqual((first["training_selected"], near_duplicate["training_selected"], later["training_selected"]), (1, 0, 1))
+        stats = self.db.training_stats()
+        self.assertEqual(stats["verified_total"], 3)
+        self.assertEqual(stats["examples"], 2)
+
+    def test_editing_a_complete_frame_removes_it_until_reviewed_again(self):
+        annotation = self.add(0, 10)
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        completed_revision = self.db.training_stats()["revision"]
+        self.assertEqual(self.db.training_stats()["examples"], 1)
+        self.db.update_annotation(annotation["id"], width=.25)
+        frame = self.db.get_frame(self.video["id"], 10)
+        self.assertFalse(frame["reviewed"])
+        self.assertEqual(self.db.training_stats()["examples"], 0)
+        self.assertEqual(self.db.training_stats()["revision"], completed_revision)
+        self.assertEqual(self.db.maxn_summary(self.video["id"]), [])
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        self.assertGreater(self.db.training_stats()["revision"], completed_revision)
 
 
 if __name__ == "__main__":

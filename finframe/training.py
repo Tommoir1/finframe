@@ -26,7 +26,7 @@ class TrainingPolicy:
 
 
 class TrainingCoordinator:
-    """Frequently fine-tunes a detector using all verified annotations."""
+    """Frequently fine-tunes a detector using complete, diverse keyframes."""
 
     SETTINGS_KEY = "training_policy"
 
@@ -92,7 +92,7 @@ class TrainingCoordinator:
         stats = self.db.training_stats()
         if stats["examples"] < self.policy.minimum_verified or stats["classes"] < self.policy.minimum_classes:
             self._set_status(
-                f"Need at least {self.policy.minimum_verified} verified boxes across {self.policy.minimum_classes} species",
+                f"Need at least {self.policy.minimum_verified} selected training boxes across {self.policy.minimum_classes} species",
                 0,
             )
             return False
@@ -129,10 +129,10 @@ class TrainingCoordinator:
         dataset_dir = run_dir / "dataset"
         output_dir = run_dir / "runs"
         self.db.update_training_run(run_id, status="running", started_at=utc_now(), dataset_path=str(dataset_dir))
-        self._set_status("Building dataset from every verified annotation", 10)
+        self._set_status("Building dataset from complete, selected keyframes", 10)
         try:
             dataset = build_yolo_training_dataset(self.db, dataset_dir)
-            self._set_status(f"Fine-tuning on {dataset['examples']} verified boxes", 25)
+            self._set_status(f"Fine-tuning on {dataset['examples']} reviewed boxes", 25)
             try:
                 from ultralytics import YOLO
             except ImportError as exc:
