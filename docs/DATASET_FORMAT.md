@@ -28,6 +28,10 @@ The `source` audit field is one of:
 
 `track_id` identifies one uninterrupted visible track segment; it is not an assertion that two appearances belong to the same biological individual. An identity ends when a fish leaves the image boundary. A later entrance receives a new ID, with no re-identification across exits.
 
+## Species taxonomy
+
+FinFrame's bundled catalogue contains the 99 species-column headers from the first worksheet named `Master Sheet` in `species_list.xlsx` (columns H–DB). Source spelling and abbreviations are preserved so historical EventMeasure labels remain searchable. Deterministic, collision-checked codes beginning with `MS` are used for track IDs and exports. User-created taxonomy records remain alongside the master catalogue.
+
 ## Coordinates
 
 SQLite and project backups store `x`, `y`, `width` and `height` between zero and one relative to the uncropped source frame. `x` and `y` are the top-left corner.

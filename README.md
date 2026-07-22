@@ -28,7 +28,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
 - Default box-seeded propagation during playback, with corrected boxes re-seeding the tracker
-- Shared species taxonomy with search-as-you-type selection, scientific names, stable codes and track IDs
+- Shared 99-species taxonomy populated from `species_list.xlsx` → first `Master Sheet`, with search-as-you-type selection, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution
 - Complete-frame counts and per-species MaxN
 - Audited `pending`, `verified` and `rejected` annotation states
@@ -109,6 +109,8 @@ python -m finframe
 ```
 
 Original images and videos retain their filesystem paths. Imported contribution frames are copied under `contributions/`, inside the same FinFrame data directory as the database. Moving an original source requires relinking it, but imported contribution bundles remain self-contained for training. Do not place SQLite directly on an unreliable network share. Concurrent students on different computers should use contribution bundles or a centrally deployed database/API rather than sharing the SQLite file.
+
+The bundled master taxonomy is added idempotently whenever a database opens. Existing custom species and any species already referenced by annotations are retained; the application never deletes taxonomy records during an upgrade.
 
 ## Exports
 

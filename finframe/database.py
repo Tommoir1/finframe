@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from .species_catalog import MASTER_SPECIES
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -15,14 +17,6 @@ def utc_now() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
-
-
-STARTER_SPECIES = (
-    ("Australasian snapper", "Chrysophrys auratus", "CHRAUR", "#ff8465"),
-    ("Silver trevally", "Pseudocaranx georgianus", "PSEGE", "#41bda8"),
-    ("Blue-throated wrasse", "Notolabrus tetricus", "NOTTET", "#efb24e"),
-    ("Horseshoe leatherjacket", "Meuschenia hippocrepis", "MEUHIPP", "#5d9bd3"),
-)
 
 
 class Database:
@@ -189,7 +183,7 @@ class Database:
                 ).rowcount
                 if selected:
                     self._bump_training_revision(db)
-            for common, scientific, code, color in STARTER_SPECIES:
+            for common, scientific, code, color in MASTER_SPECIES:
                 db.execute(
                     "INSERT OR IGNORE INTO species(id, common_name, scientific_name, code, color, created_at) VALUES(?,?,?,?,?,?)",
                     (new_id("sp"), common, scientific, code, color, utc_now()),

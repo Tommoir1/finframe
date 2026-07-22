@@ -1083,7 +1083,9 @@ class MainWindow(QMainWindow):
         selected = self.species_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.species_list.currentItem() else None
         self.species_list.clear()
         for item in species:
-            row = QListWidgetItem(f"{item['common_name']}\n{item['scientific_name'] or 'Unspecified'} · {item['code']}")
+            scientific = str(item["scientific_name"] or "").strip()
+            detail = scientific if scientific.casefold() != str(item["common_name"]).casefold() else "Master species list"
+            row = QListWidgetItem(f"{item['common_name']}\n{detail} · {item['code']}")
             row.setData(Qt.ItemDataRole.UserRole, item["id"])
             row.setForeground(QColor(item["color"]))
             self.species_list.addItem(row)
