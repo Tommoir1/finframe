@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt
+from PySide6.QtCore import QEventLoop, QPoint, QPointF, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
@@ -169,6 +169,22 @@ class DesktopMediaTests(unittest.TestCase):
                 window.canvas._hovered_id,
                 window.canvas._annotations[-1]["id"],
             )
+            window.canvas.select_annotation(window.canvas._annotations[0]["id"])
+            window.canvas._action = "draw"
+            window.canvas._start = QPointF(.45, .45)
+            window.canvas._current = QPointF(.70, .70)
+            rendered_canvas = window.canvas.grab().toImage()
+            preview_center = window.canvas._screen_box((.45, .45, .25, .25)).center()
+            preview_color = rendered_canvas.pixelColor(
+                round(preview_center.x()),
+                round(preview_center.y()),
+            )
+            self.assertFalse(
+                preview_color.red() > 240
+                and preview_color.green() > 240
+                and preview_color.blue() > 240
+            )
+            window.canvas._action = None
             with patch(
                 "finframe.main_window.QMessageBox.question",
                 return_value=QMessageBox.StandardButton.Yes,
@@ -339,9 +355,10 @@ class DesktopMediaTests(unittest.TestCase):
             window.accept_sam_mask()
             annotations = db.annotations_for_frame(media["id"], 0)
             self.assertEqual(len(annotations), 1)
-            self.assertEqual(annotations[0]["source"], "ai_corrected")
+            self.assertEqual(annotations[0]["source"], "manual")
             self.assertEqual(annotations[0]["status"], "verified")
             self.assertTrue(annotations[0]["mask_rle"])
+            self.assertEqual(window.annotation_table.item(0, 3).text(), "SAM Manual")
             self.assertEqual(window.sam_points, [])
             self.assertTrue(window.sam_checkbox.isChecked())
 

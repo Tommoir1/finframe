@@ -38,7 +38,7 @@ SQLite and project backups store `x`, `y`, `width` and `height` between zero and
 
 COCO exports convert these to pixel `[x, y, width, height]`. YOLO exports use normalised `class centre_x centre_y width height` lines.
 
-An annotation accepted from SAM can additionally contain `mask_rle`, an uncompressed COCO run-length encoding in source-frame pixel coordinates. Its bounding box remains required so the same reviewed annotation can support MaxN, tracking and object-detection training. Manual geometry edits clear an existing mask rather than silently retaining segmentation pixels that no longer match the box.
+An annotation accepted from SAM can additionally contain `mask_rle`, an uncompressed COCO run-length encoding in source-frame pixel coordinates. It uses the `manual` source because the student explicitly reviews the species and mask; the interface displays it as `SAM Manual` so the assisted drawing method remains visible. Its bounding box remains required so the same reviewed annotation can support MaxN, tracking and object-detection training. Manual geometry edits clear an existing mask rather than silently retaining segmentation pixels that no longer match the box.
 
 ## Dataset archives
 

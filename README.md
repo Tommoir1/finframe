@@ -56,7 +56,7 @@ AI output is never treated as truth. A detector or tracker proposal is stored as
 
 Approving an unchanged proposal records `ai_verified` or `tracker_verified`. Changing its class, geometry or metadata before approval records `ai_corrected` or `tracker_corrected`. Rejected proposals remain outside the dataset.
 
-SAM assistance has a separate, explicit review boundary. Its mask is only an on-screen preview while the student adds positive or negative correction points. Nothing enters the database until **Accept mask + box** is pressed. Acceptance records the reviewed mask plus its derived bounding box as `ai_verified`, or `ai_corrected` when the student used correction points; resetting it or returning to the manual box tool records nothing.
+SAM assistance has a separate, explicit review boundary. Its mask is only an on-screen preview while the student adds positive or negative correction points. Nothing enters the database until **Accept mask + box** is pressed. Acceptance records the reviewed mask plus its derived bounding box as `manual`, and the interface identifies it as **SAM Manual**; resetting it or returning to the manual box tool records nothing. Older SAM masks are normalised to the same manual classification when their project database is opened.
 
 Approval operates at two levels. Box approval means that one proposed label is correct. Frame completion means that the student has checked the whole image and boxed every visible fish. A frame cannot be completed while any proposal on it is pending. Editing a complete frame automatically makes it incomplete again so the changed observation must be reviewed.
 

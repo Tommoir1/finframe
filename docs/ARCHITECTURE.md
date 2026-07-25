@@ -24,7 +24,7 @@ Video decoding and seeded tracker updates run in a dedicated playback thread. Tr
 
 ## Human review boundary
 
-Detector and tracker inference writes only `pending` annotations. A SAM result remains an ephemeral canvas preview while the student adds positive and negative points; explicit acceptance stores the mask and derived box as `ai_verified`, or `ai_corrected` after correction points. Final MaxN and observation exports query only verified boxes whose frames are complete. Training builders add a second database filter for selected keyframes. This makes both review boundaries structural rather than dependent on a UI filter.
+Detector and tracker inference writes only `pending` annotations. A SAM result remains an ephemeral canvas preview while the student adds positive and negative points; explicit acceptance stores the mask and derived box as a human-reviewed `manual` annotation, displayed as `SAM Manual` in the interface. Final MaxN and observation exports query only verified boxes whose frames are complete. Training builders add a second database filter for selected keyframes. This makes both review boundaries structural rather than dependent on a UI filter.
 
 Any edit to a complete frame invalidates its completion and training selection. Re-completing the edited frame, or explicitly marking a selected frame incomplete, advances `training_dataset_revision`. This prevents training from starting halfway through a correction. The coordinator compares the revision with the last completed snapshot, so finalized corrections and explicit removals trigger retraining.
 

@@ -165,6 +165,7 @@ class AnnotationCanvas(QWidget):
             painter.setPen(pen)
             screen_box = self._screen_box(self._box(annotation))
             painter.fillRect(screen_box, QColor(color.red(), color.green(), color.blue(), 35 if selected else 14))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(screen_box)
             if annotation["id"] == self._hovered_id:
                 label = f"{'AI? · ' if annotation.get('status') == 'pending' else ''}{annotation.get('code','')} · {annotation.get('track_id','')}"
@@ -210,6 +211,7 @@ class AnnotationCanvas(QWidget):
             left, right = sorted((self._start.x(), self._current.x()))
             top, bottom = sorted((self._start.y(), self._current.y()))
             painter.setPen(QPen(QColor("#ffffff"), 2, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self._screen_box((left, top, right - left, bottom - top)))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:

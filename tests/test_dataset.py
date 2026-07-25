@@ -73,7 +73,7 @@ class DatasetExportTests(unittest.TestCase):
             box=(.1, .2, .3, .4),
             mask_rle=encode_mask_rle(mask),
             status="verified",
-            source="ai_verified",
+            source="manual",
         )
         self.db.set_frame_reviewed(self.video["id"], 14, True)
 

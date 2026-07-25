@@ -172,6 +172,10 @@ class Database:
             annotation_columns = {row[1] for row in db.execute("PRAGMA table_info(annotations)")}
             if "mask_rle" not in annotation_columns:
                 db.execute("ALTER TABLE annotations ADD COLUMN mask_rle TEXT NOT NULL DEFAULT ''")
+            db.execute(
+                """UPDATE annotations SET source='manual'
+                   WHERE mask_rle<>'' AND source IN ('ai_verified','ai_corrected')"""
+            )
             if training_selection_added:
                 db.execute(
                     """UPDATE frames SET reviewed=1,updated_at=?
@@ -186,6 +190,19 @@ class Database:
                        )"""
                 ).rowcount
                 if selected:
+                    self._bump_training_revision(db)
+            else:
+                promoted = db.execute(
+                    """UPDATE frames
+                       SET training_selected=1,training_reason='manual_or_corrected',updated_at=?
+                       WHERE reviewed=1 AND training_selected=0
+                       AND EXISTS (
+                           SELECT 1 FROM annotations a
+                           WHERE a.frame_id=frames.id AND a.status='verified' AND a.mask_rle<>''
+                       )""",
+                    (utc_now(),),
+                ).rowcount
+                if promoted:
                     self._bump_training_revision(db)
             for common, scientific, code, color in MASTER_SPECIES:
                 db.execute(
@@ -467,6 +484,10 @@ class Database:
     ) -> dict[str, Any]:
         if status not in {"pending", "verified", "rejected"}:
             raise ValueError("Invalid annotation status")
+        if mask_rle and source in {"ai_verified", "ai_corrected"}:
+            # SAM proposes geometry, but accepting its mask is still a human
+            # annotation decision. Keep detector-produced labels distinct.
+            source = "manual"
         x, y, width, height = box
         if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < width <= 1 and 0 < height <= 1 and x + width <= 1.000001 and y + height <= 1.000001):
             raise ValueError("Bounding box must be normalised inside the frame")

@@ -139,10 +139,45 @@ class DatabaseWorkflowTests(unittest.TestCase):
             source="ai_verified",
         )
         self.assertTrue(annotation["mask_rle"])
+        self.assertEqual(annotation["source"], "manual")
 
         updated = self.db.update_annotation(annotation["id"], width=.45)
 
         self.assertEqual(updated["mask_rle"], "")
+
+    def test_existing_sam_annotations_are_migrated_to_manual_training_labels(self):
+        mask = np.zeros((20, 40), dtype=np.uint8)
+        mask[4:12, 8:24] = 1
+        annotation = self.db.add_annotation(
+            video_id=self.video["id"],
+            frame_number=10,
+            time_seconds=.4,
+            species_id=self.species[0]["id"],
+            track_id="SAM-001",
+            box=(.2, .2, .4, .4),
+            mask_rle=encode_mask_rle(mask),
+            status="verified",
+            source="manual",
+        )
+        self.db.set_frame_reviewed(self.video["id"], 10, True)
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE annotations SET source='ai_corrected' WHERE id=?",
+                (annotation["id"],),
+            )
+            db.execute(
+                """UPDATE frames SET training_selected=0,training_reason='near_duplicate'
+                   WHERE id=?""",
+                (annotation["frame_id"],),
+            )
+
+        reopened = Database(self.db.path)
+        migrated = reopened.get_annotation(annotation["id"])
+        frame = reopened.get_frame(self.video["id"], 10)
+
+        self.assertEqual(migrated["source"], "manual")
+        self.assertEqual(frame["training_selected"], 1)
+        self.assertEqual(frame["training_reason"], "manual_or_corrected")
 
     def test_clear_video_annotations_is_scoped_and_invalidates_affected_frames(self):
         verified = self.add(0, 10)

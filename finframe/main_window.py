@@ -1630,7 +1630,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Select a species", "Select the fish species first.")
             return
         result = self.sam_result
-        source = "ai_corrected" if len(self.sam_points) > 1 else "ai_verified"
         try:
             annotation = self.db.add_annotation(
                 video_id=self.current_video["id"],
@@ -1641,7 +1640,7 @@ class MainWindow(QMainWindow):
                 box=result.box,
                 mask_rle=result.mask_rle,
                 status="verified",
-                source=source,
+                source="manual",
                 confidence=result.confidence,
                 created_by=self.current_project.get("observer", "") if self.current_project else "",
                 life_stage="Adult",
@@ -1974,7 +1973,11 @@ class MainWindow(QMainWindow):
                     annotation["status"].title(),
                     annotation["common_name"],
                     annotation["track_id"],
-                    annotation["source"].replace("_", " ").title(),
+                    (
+                        "SAM Manual"
+                        if annotation.get("mask_rle")
+                        else annotation["source"].replace("_", " ").title()
+                    ),
                     f"{annotation['confidence'] * 100:.0f}%" if annotation["confidence"] is not None else "—",
                 ]
                 for column, value in enumerate(values):
