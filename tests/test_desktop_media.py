@@ -11,10 +11,10 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QEventLoop, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from finframe.database import Database
-from finframe.main_window import MainWindow, PlaybackWorker
+from finframe.main_window import MainWindow, PlaybackWorker, SpeciesDialog, suggested_species_code
 from finframe.seed_tracking import SeedTrackingSession
 
 
@@ -122,6 +122,62 @@ class DesktopMediaTests(unittest.TestCase):
                 second_species.data(Qt.ItemDataRole.UserRole),
             )
             self.assertIn(second_species.text().splitlines()[0], window.annotation_editor_status.text())
+            window.close()
+
+    def test_species_sidebar_adds_and_edits_separate_names_with_a_stable_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Taxonomy survey")
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+
+            self.assertTrue(window.add_species_button.isEnabled())
+            self.assertTrue(window.edit_species_button.isEnabled())
+            self.assertEqual(
+                suggested_species_code("Chromis exampleii"),
+                "USR-CHROMIS-EXAMPLEII",
+            )
+
+            add_dialog = SpeciesDialog(window)
+            add_dialog.common_name.setText("Example Chromis")
+            add_dialog.scientific_name.setText("Chromis exampleii")
+            add_dialog.code.setText("USR-CHROMIS-EXAMPLEII")
+            with (
+                patch("finframe.main_window.SpeciesDialog", return_value=add_dialog),
+                patch.object(
+                    add_dialog,
+                    "exec",
+                    return_value=QDialog.DialogCode.Accepted,
+                ),
+            ):
+                window.add_species()
+
+            created = db.species_by_code("USR-CHROMIS-EXAMPLEII")
+            self.assertIsNotNone(created)
+            self.assertEqual(created["common_name"], "Example Chromis")
+            self.assertEqual(created["scientific_name"], "Chromis exampleii")
+            self.assertEqual(window.selected_species_id(), created["id"])
+
+            edit_dialog = SpeciesDialog(window, created)
+            edit_dialog.common_name.setText("Corrected Chromis")
+            edit_dialog.scientific_name.setText("Chromis correctii")
+            self.assertTrue(edit_dialog.code.isReadOnly())
+            with (
+                patch("finframe.main_window.SpeciesDialog", return_value=edit_dialog),
+                patch.object(
+                    edit_dialog,
+                    "exec",
+                    return_value=QDialog.DialogCode.Accepted,
+                ),
+            ):
+                window.edit_species()
+
+            updated = db.get_species(created["id"])
+            self.assertEqual(updated["common_name"], "Corrected Chromis")
+            self.assertEqual(updated["scientific_name"], "Chromis correctii")
+            self.assertEqual(updated["code"], "USR-CHROMIS-EXAMPLEII")
+            self.assertIn("Corrected Chromis", window.species_list.currentItem().text())
             window.close()
 
     def test_left_species_does_not_silently_relabel_a_selected_box(self):

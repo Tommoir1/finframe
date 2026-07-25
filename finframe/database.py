@@ -337,12 +337,82 @@ class Database:
             row = db.execute("SELECT * FROM species WHERE code=? COLLATE NOCASE", (code,)).fetchone()
         return dict(row) if row else None
 
-    def add_species(self, common_name: str, scientific_name: str, code: str, color: str) -> dict[str, Any]:
-        species_id = new_id("sp")
+    def species_by_scientific_name(self, scientific_name: str) -> dict[str, Any] | None:
+        scientific_name = scientific_name.strip()
+        if not scientific_name:
+            return None
         with self.connect() as db:
+            row = db.execute(
+                """SELECT * FROM species
+                   WHERE TRIM(scientific_name)=? COLLATE NOCASE""",
+                (scientific_name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_species(self, common_name: str, scientific_name: str, code: str, color: str) -> dict[str, Any]:
+        common_name = common_name.strip()
+        scientific_name = scientific_name.strip()
+        code = code.strip().upper()
+        if not common_name:
+            raise ValueError("Common name is required")
+        if not code:
+            raise ValueError("A stable species code is required")
+        species_id = new_id("sp")
+        try:
+            with self.connect() as db:
+                if scientific_name:
+                    duplicate = db.execute(
+                        """SELECT common_name,code FROM species
+                           WHERE TRIM(scientific_name)=? COLLATE NOCASE""",
+                        (scientific_name,),
+                    ).fetchone()
+                    if duplicate:
+                        raise ValueError(
+                            f"{scientific_name} already exists as "
+                            f"{duplicate['common_name']} ({duplicate['code']})"
+                        )
+                db.execute(
+                    "INSERT INTO species(id,common_name,scientific_name,code,color,created_at) VALUES(?,?,?,?,?,?)",
+                    (species_id, common_name, scientific_name, code, color, utc_now()),
+                )
+        except sqlite3.IntegrityError as exc:
+            if "species.code" in str(exc):
+                raise ValueError(f"Species code {code} is already in use") from exc
+            raise
+        return self.get_species(species_id)
+
+    def update_species(
+        self,
+        species_id: str,
+        *,
+        common_name: str,
+        scientific_name: str,
+        color: str,
+    ) -> dict[str, Any]:
+        common_name = common_name.strip()
+        scientific_name = scientific_name.strip()
+        if not common_name:
+            raise ValueError("Common name is required")
+        if not scientific_name:
+            raise ValueError("Scientific name is required")
+        with self.connect() as db:
+            current = db.execute("SELECT id FROM species WHERE id=?", (species_id,)).fetchone()
+            if current is None:
+                raise KeyError(f"Unknown species {species_id}")
+            duplicate = db.execute(
+                """SELECT common_name,code FROM species
+                   WHERE TRIM(scientific_name)=? COLLATE NOCASE AND id<>?""",
+                (scientific_name, species_id),
+            ).fetchone()
+            if duplicate:
+                raise ValueError(
+                    f"{scientific_name} already exists as "
+                    f"{duplicate['common_name']} ({duplicate['code']})"
+                )
             db.execute(
-                "INSERT INTO species(id,common_name,scientific_name,code,color,created_at) VALUES(?,?,?,?,?,?)",
-                (species_id, common_name.strip(), scientific_name.strip(), code.strip().upper(), color, utc_now()),
+                """UPDATE species SET common_name=?,scientific_name=?,color=?
+                   WHERE id=?""",
+                (common_name, scientific_name, color, species_id),
             )
         return self.get_species(species_id)
 
@@ -982,6 +1052,10 @@ class Database:
         species_map: dict[str, str] = {}
         for source_species in snapshot.get("species", []):
             target = self.species_by_code(source_species.get("code", ""))
+            if target is None:
+                target = self.species_by_scientific_name(
+                    source_species.get("scientific_name", "")
+                )
             if target is None:
                 target = self.add_species(
                     source_species.get("common_name", source_species.get("code", "Unknown species")),

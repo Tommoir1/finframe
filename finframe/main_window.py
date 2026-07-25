@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -84,6 +85,12 @@ def _iou(first: dict[str, Any], second: tuple[float, float, float, float]) -> fl
     return intersection / union if union else 0.0
 
 
+def suggested_species_code(name: str) -> str:
+    """Create a readable, deterministic class code for a new taxon."""
+    tokens = re.findall(r"[A-Za-z0-9]+", name.upper())
+    return f"USR-{'-'.join(tokens)}" if tokens else "USR-SPECIES"
+
+
 class ProjectDialog(QDialog):
     def __init__(self, parent: QWidget | None = None, project: dict[str, Any] | None = None):
         super().__init__(parent)
@@ -125,6 +132,98 @@ class ProjectDialog(QDialog):
             "survey_date": self.survey_date.text().strip(),
             "depth": self.depth.text().strip(),
             "notes": self.notes.toPlainText().strip(),
+        }
+
+
+class SpeciesDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None, species: dict[str, Any] | None = None):
+        super().__init__(parent)
+        self._editing = species is not None
+        self._code_was_edited = False
+        self._color = QColor(str(species.get("color", "#ff8465")) if species else "#ff8465")
+        self.setWindowTitle("Edit species" if species else "Add new species")
+        self.setMinimumWidth(440)
+
+        layout = QFormLayout(self)
+        self.common_name = QLineEdit()
+        self.common_name.setPlaceholderText("e.g. Norfolk Chromis")
+        self.scientific_name = QLineEdit()
+        self.scientific_name.setPlaceholderText("e.g. Chromis norfolkensis")
+        self.code = QLineEdit()
+        self.code.setPlaceholderText("Generated from the scientific name")
+        self.code.setToolTip(
+            "This stable identifier is used in exported machine-learning datasets. "
+            "It cannot be changed after the species is created."
+        )
+        self.color_button = QPushButton()
+        self.color_button.clicked.connect(self.choose_color)
+        self._refresh_color_button()
+
+        layout.addRow("Common name", self.common_name)
+        layout.addRow("Scientific name", self.scientific_name)
+        layout.addRow("Dataset code", self.code)
+        layout.addRow("Bounding-box colour", self.color_button)
+        explanation = QLabel(
+            "Names can be corrected later. The dataset code remains fixed so existing "
+            "annotations and trained models continue to refer to the same class."
+        )
+        explanation.setWordWrap(True)
+        layout.addRow(explanation)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+        if species:
+            self.common_name.setText(str(species.get("common_name", "")))
+            self.scientific_name.setText(str(species.get("scientific_name", "")))
+            self.code.setText(str(species.get("code", "")))
+            self.code.setReadOnly(True)
+        else:
+            self.scientific_name.textEdited.connect(self.refresh_suggested_code)
+            self.common_name.textEdited.connect(self.refresh_suggested_code)
+            self.code.textEdited.connect(self.mark_code_edited)
+
+    def mark_code_edited(self, _text: str) -> None:
+        self._code_was_edited = True
+
+    def refresh_suggested_code(self, _text: str = "") -> None:
+        if self._editing or self._code_was_edited:
+            return
+        source = self.scientific_name.text().strip() or self.common_name.text().strip()
+        self.code.setText(suggested_species_code(source))
+
+    def choose_color(self) -> None:
+        color = QColorDialog.getColor(self._color, self, "Bounding-box colour")
+        if color.isValid():
+            self._color = color
+            self._refresh_color_button()
+
+    def _refresh_color_button(self) -> None:
+        self.color_button.setText(f"Choose colour…  {self._color.name()}")
+        self.color_button.setStyleSheet(f"background-color: {self._color.name()};")
+
+    def validate_and_accept(self) -> None:
+        if not self.common_name.text().strip():
+            QMessageBox.warning(self, "Common name required", "Enter a common name.")
+            return
+        if not self.scientific_name.text().strip():
+            QMessageBox.warning(self, "Scientific name required", "Enter a scientific name.")
+            return
+        if not self.code.text().strip():
+            QMessageBox.warning(self, "Dataset code required", "Enter a stable dataset code.")
+            return
+        self.accept()
+
+    def values(self) -> dict[str, str]:
+        return {
+            "common_name": self.common_name.text().strip(),
+            "scientific_name": self.scientific_name.text().strip(),
+            "code": self.code.text().strip().upper(),
+            "color": self._color.name(),
         }
 
 
@@ -381,11 +480,20 @@ class MainWindow(QMainWindow):
         self.species_list = QListWidget()
         self.species_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.species_list.currentItemChanged.connect(self.active_species_changed)
-        add_species = QPushButton("Add species")
-        add_species.clicked.connect(self.add_species)
+        self.species_list.itemDoubleClicked.connect(self.edit_species)
+        species_actions = QHBoxLayout()
+        self.add_species_button = QPushButton("Add species")
+        self.add_species_button.setObjectName("addSpeciesButton")
+        self.add_species_button.clicked.connect(self.add_species)
+        self.edit_species_button = QPushButton("Edit selected")
+        self.edit_species_button.setObjectName("editSpeciesButton")
+        self.edit_species_button.setEnabled(False)
+        self.edit_species_button.clicked.connect(self.edit_species)
+        species_actions.addWidget(self.add_species_button)
+        species_actions.addWidget(self.edit_species_button)
         species_layout.addWidget(self.species_search)
         species_layout.addWidget(self.species_list, 1)
-        species_layout.addWidget(add_species)
+        species_layout.addLayout(species_actions)
         splitter.addWidget(species_panel)
 
         video_panel = QWidget()
@@ -1194,6 +1302,7 @@ class MainWindow(QMainWindow):
             self._show_active_species_in_editor()
 
     def active_species_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        self.edit_species_button.setEnabled(current is not None)
         if self.selected_annotation_id is None:
             self._show_active_species_in_editor(current)
 
@@ -1292,23 +1401,54 @@ class MainWindow(QMainWindow):
         return True
 
     def add_species(self) -> None:
-        common, ok = QInputDialog.getText(self, "Add species", "Common name")
-        if not ok or not common.strip():
+        dialog = SpeciesDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        scientific, ok = QInputDialog.getText(self, "Add species", "Scientific name")
-        if not ok:
-            return
-        code, ok = QInputDialog.getText(self, "Add species", "Stable species code")
-        if not ok or not code.strip():
-            return
-        color = QColorDialog.getColor(QColor("#ff8465"), self, "Bounding-box colour")
-        if not color.isValid():
-            return
+        values = dialog.values()
         try:
-            self.db.add_species(common, scientific, code, color.name())
+            if not values["common_name"] or not values["scientific_name"] or not values["code"]:
+                raise ValueError("Common name, scientific name and dataset code are required")
+            species = self.db.add_species(**values)
+            self.species_search.clear()
             self.refresh_species()
+            self._select_species_in_list(species["id"])
+            self.statusBar().showMessage(f"Added species: {species['common_name']}", 5000)
         except Exception as exc:
             QMessageBox.warning(self, "Could not add species", str(exc))
+
+    def edit_species(self, *_args: Any) -> None:
+        species_id = self.selected_species_id()
+        if not species_id or not self._persist_selected_annotation():
+            return
+        species = self.db.get_species(species_id)
+        dialog = SpeciesDialog(self, species)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            updated = self.db.update_species(
+                species_id,
+                common_name=values["common_name"],
+                scientific_name=values["scientific_name"],
+                color=values["color"],
+            )
+            self.refresh_species()
+            self._select_species_in_list(species_id)
+            if self.current_video:
+                self.refresh_frame_annotations()
+            self.statusBar().showMessage(
+                f"Updated species: {updated['common_name']} · dataset code unchanged",
+                5000,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not edit species", str(exc))
+
+    def _select_species_in_list(self, species_id: str) -> None:
+        for index in range(self.species_list.count()):
+            item = self.species_list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) == species_id:
+                self.species_list.setCurrentItem(item)
+                return
 
     def selected_species_id(self) -> str | None:
         item = self.species_list.currentItem()

@@ -76,6 +76,68 @@ class SpeciesCatalogTests(unittest.TestCase):
                 "My local wrasse name",
             )
 
+    def test_custom_species_can_be_corrected_without_changing_its_dataset_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            db = Database(Path(temporary) / "finframe.sqlite3")
+            created = db.add_species(
+                "Typo fish",
+                "Typous fishii",
+                "USR-TYPOUS-FISHII",
+                "#123456",
+            )
+
+            updated = db.update_species(
+                created["id"],
+                common_name="Corrected fish",
+                scientific_name="Correctus fishii",
+                color="#654321",
+            )
+
+            self.assertEqual(updated["common_name"], "Corrected fish")
+            self.assertEqual(updated["scientific_name"], "Correctus fishii")
+            self.assertEqual(updated["code"], "USR-TYPOUS-FISHII")
+            self.assertEqual(updated["color"], "#654321")
+
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                db.add_species(
+                    "Duplicate fish",
+                    "correctus FISHII",
+                    "USR-DUPLICATE",
+                    "#abcdef",
+                )
+
+    def test_project_import_merges_a_new_species_by_scientific_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            db = Database(Path(temporary) / "finframe.sqlite3")
+            existing = db.add_species(
+                "Local shared fish",
+                "Communis studentii",
+                "USR-COMMUNIS-STUDENTII",
+                "#123456",
+            )
+            snapshot = {
+                "schemaVersion": "2.0",
+                "project": {"name": "Student contribution"},
+                "species": [
+                    {
+                        "id": "source_species",
+                        "common_name": "Other common name",
+                        "scientific_name": "communis STUDENTII",
+                        "code": "A-DIFFERENT-STUDENT-CODE",
+                        "color": "#abcdef",
+                    }
+                ],
+                "videos": [],
+            }
+
+            db.import_project_snapshot(snapshot)
+
+            self.assertEqual(
+                db.species_by_scientific_name("Communis studentii")["id"],
+                existing["id"],
+            )
+            self.assertIsNone(db.species_by_code("A-DIFFERENT-STUDENT-CODE"))
+
 
 if __name__ == "__main__":
     unittest.main()
