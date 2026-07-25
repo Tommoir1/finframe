@@ -106,6 +106,8 @@ class DesktopMediaTests(unittest.TestCase):
             video_layout = window.canvas.parentWidget().layout()
             self.assertEqual(video_layout.indexOf(window.timeline_row), video_layout.indexOf(window.canvas) + 1)
             self.assertIs(window.timeline.parentWidget(), window.timeline_row)
+            self.assertFalse(window.seed_tracking_checkbox.isChecked())
+            self.assertEqual(window.seed_tracking_status.text(), "Propagation off")
             species_texts = [window.species_list.item(index).text() for index in range(window.species_list.count())]
             self.assertTrue(species_texts)
             self.assertFalse(any("Master species list" in text for text in species_texts))
@@ -203,8 +205,10 @@ class DesktopMediaTests(unittest.TestCase):
             self.app.processEvents()
 
             window.create_manual_box((.1, .1, .2, .2))
+            self.assertEqual(window.seed_tracking.active_count, 0)
             loaded = db.annotations_for_frame(video["id"], 0)
             self.assertEqual(loaded[0]["frame_number"], 0)
+            window.seed_tracking_checkbox.setChecked(True)
             window.toggle_playback()
             worker = window.playback_worker
             self.assertIsNotNone(worker)

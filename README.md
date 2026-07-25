@@ -11,8 +11,8 @@ The application is local-first. Video remains on the workstation, while projects
 3. Add one or more source videos, choose multiple still-image files, or import an image folder including its subfolders.
 4. Select a species and draw a box around every visible fish on an observation frame or image.
 5. Mark the frame complete only after every visible fish is boxed. Only complete frames contribute to final MaxN.
-6. For video, optionally choose 0.5× through 6× playback and press Play. Every drawn box seeds a CPU tracker by default. Playback decoding and tracking run in the background, so speed and navigation controls remain responsive.
-7. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
+6. For video, optionally choose 0.5× through 6× playback and press Play. Box propagation is off by default, keeping fast-forward-and-pause surveys manual and responsive.
+7. Optionally enable the experimental box-propagation checkbox for a continuous segment. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
 8. Correct proposals while watching, then use **Approve watched segment** after checking that no fish were missed.
 9. FinFrame calculates per-species MaxN from all complete frames and keeps incomplete work visibly excluded.
 10. FinFrame selects complete, diverse keyframes for detector training; pending predictions can never train the model.
@@ -27,7 +27,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - First-class still-image annotation with multi-file and recursive folder import; Image arrows move through the imported photo set
 - Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing
-- Default box-seeded propagation during playback, with corrected boxes re-seeding the tracker
+- Opt-in experimental box-seeded propagation during continuous playback, with corrected boxes re-seeding the tracker
 - Shared 99-species taxonomy populated from `species_list.xlsx` → first `Master Sheet`, with search-as-you-type selection, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution
 - Complete-frame counts and per-species MaxN

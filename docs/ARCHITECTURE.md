@@ -4,7 +4,7 @@
 PySide6 student interface
         |
         +-- Background OpenCV image/video reader and responsive 0.5×–6× playback
-        +-- Default box-seeded CSRT/KCF/MIL propagation
+        +-- Opt-in experimental CSRT/KCF/MIL box propagation
         +-- SQLite project and annotation repository
         +-- Complete-frame MaxN queries
         +-- COCO/YOLO/CSV dataset services
@@ -29,7 +29,7 @@ Any edit to a complete frame invalidates its completion and training selection. 
 
 ## Tracking identity boundary
 
-Drawing or correcting a box seeds the strongest available OpenCV CPU tracker. Sequential playback writes its propagated geometry as pending `tracker` proposals. Seeking, rejection, deletion or the explicit stop action ends propagation.
+When experimental box propagation is enabled, drawing or correcting a box seeds the strongest available OpenCV CPU tracker. Sequential playback writes its propagated geometry as pending `tracker` proposals. Propagation is disabled at every launch; seeking, rejection, deletion or the explicit stop action ends active tracks.
 
 Track IDs represent uninterrupted visibility only. If the last visible box touches the image boundary and then disappears, the seeded tracker retires that identity immediately. A boundary identity allocator applies the same rule to ByteTrack and BoT-SORT output, preventing reuse of an internal tracker ID after an exit. Missing detections away from an edge may retain an identity briefly as an in-frame occlusion. There is deliberately no cross-exit re-identification.
 

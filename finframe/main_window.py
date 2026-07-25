@@ -419,12 +419,15 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
         video_layout.addLayout(controls)
         seed_controls = QHBoxLayout()
-        self.seed_tracking_checkbox = QCheckBox("Propagate drawn boxes while playing")
-        self.seed_tracking_checkbox.setChecked(True)
+        self.seed_tracking_checkbox = QCheckBox("Enable box propagation while playing (experimental)")
+        self.seed_tracking_checkbox.setToolTip(
+            "Off by default. Enable only for continuous playback segments that you will review."
+        )
+        self.seed_tracking_checkbox.setChecked(False)
         self.seed_tracking_checkbox.toggled.connect(self.seed_tracking_toggled)
         stop_seed_tracking = QPushButton("Stop propagation")
         stop_seed_tracking.clicked.connect(self.stop_seed_tracking)
-        self.seed_tracking_status = QLabel("0 active seeded tracks")
+        self.seed_tracking_status = QLabel("Propagation off")
         seed_controls.addWidget(self.seed_tracking_checkbox)
         seed_controls.addWidget(stop_seed_tracking)
         seed_controls.addWidget(self.seed_tracking_status)
@@ -1063,13 +1066,17 @@ class MainWindow(QMainWindow):
             self._refresh_seed_tracking_status("New boxes will propagate during playback")
 
     def stop_seed_tracking(self) -> None:
+        self.seed_tracking_checkbox.setChecked(False)
         self.seed_tracking.clear()
-        self._refresh_seed_tracking_status("All seeded tracks stopped")
+        self._refresh_seed_tracking_status("Box propagation stopped")
 
     def _refresh_seed_tracking_status(self, message: str | None = None) -> None:
         if hasattr(self, "seed_tracking_status"):
-            count = self.seed_tracking.active_count
-            self.seed_tracking_status.setText(f"{count} active seeded track{'s' if count != 1 else ''}")
+            if not self.seed_tracking_checkbox.isChecked():
+                self.seed_tracking_status.setText("Propagation off")
+            else:
+                count = self.seed_tracking.active_count
+                self.seed_tracking_status.setText(f"{count} active seeded track{'s' if count != 1 else ''}")
         if message and self.statusBar():
             self.statusBar().showMessage(message, 5000)
 
