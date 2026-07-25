@@ -14,7 +14,7 @@ The application is local-first. Video remains on the workstation, while projects
 6. For video, optionally choose 0.5× through 6× playback and press Play. Box propagation is off by default, keeping fast-forward-and-pause surveys manual and responsive.
 7. Optionally enable the experimental box-propagation checkbox for a continuous segment. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
 8. Correct proposals while watching, then use **Approve watched segment** after checking that no fish were missed.
-9. FinFrame calculates per-species MaxN from all complete frames and keeps incomplete work visibly excluded.
+9. FinFrame updates a provisional Live MaxN from verified boxes immediately and calculates defensible Final MaxN from completed frames only.
 10. FinFrame selects complete, diverse keyframes for detector training; pending predictions can never train the model.
 
 All projects in the database contribute to training. Opening another image or video does not discard earlier annotations.
@@ -30,7 +30,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - Opt-in experimental box-seeded propagation during continuous playback, with corrected boxes re-seeding the tracker
 - Shared 99-species taxonomy populated from `species_list.xlsx` → first `Master Sheet`, with search-as-you-type selection, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution
-- Complete-frame counts and per-species MaxN
+- Automatic per-species Live MaxN plus complete-frame Final MaxN
 - Audited `pending`, `verified` and `rejected` annotation states
 - AI suggestions on the current frame
 - Species suggestions for newly drawn boxes once an active detector exists; these remain pending until reviewed

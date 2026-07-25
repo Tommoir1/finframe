@@ -256,6 +256,55 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertEqual(window.maxn_table.rowCount(), 0)
             window.close()
 
+    def test_approve_watched_segment_populates_final_maxn_without_database_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "approve-segment.avi"
+            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 25, (48, 32))
+            if not writer.isOpened():
+                self.skipTest("MJPG VideoWriter is unavailable")
+            for _ in range(4):
+                writer.write(np.full((32, 48, 3), 80, dtype=np.uint8))
+            writer.release()
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Approve watched segment")
+            video = db.add_video(
+                project["id"], path, duration=.16, width=48, height=32,
+                fps=25, frame_count=4, media_type="video"
+            )
+            species = db.list_species()[0]
+            db.add_annotation(
+                video_id=video["id"], frame_number=1, time_seconds=.04,
+                species_id=species["id"], track_id="FISH-001", box=(.1, .1, .2, .2),
+                status="verified", source="manual",
+            )
+            for track_id, x in (("FISH-001", .1), ("FISH-002", .4)):
+                db.add_annotation(
+                    video_id=video["id"], frame_number=2, time_seconds=.08,
+                    species_id=species["id"], track_id=track_id, box=(x, .1, .2, .2),
+                    status="pending", source="tracker",
+                )
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(window.video_combo.findData(video["id"]))
+            window.seek_frame(3)
+            window.review_segment_start = 0
+            self.app.processEvents()
+
+            with (
+                patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),
+                patch("finframe.main_window.QMessageBox.information"),
+                patch("finframe.main_window.QMessageBox.warning") as warning,
+            ):
+                window.approve_watched_segment()
+
+            warning.assert_not_called()
+            self.assertTrue(db.get_frame(video["id"], 2)["reviewed"])
+            self.assertEqual(db.maxn_summary(video["id"])[0]["maxn"], 2)
+            self.assertEqual(window.maxn_table.item(0, 2).text(), "2")
+            self.assertEqual(window.maxn_table.item(0, 3).text(), "2")
+            window.close()
+
     def test_main_window_can_change_speed_and_pause_during_playback(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

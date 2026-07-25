@@ -44,6 +44,13 @@ class DatabaseWorkflowTests(unittest.TestCase):
         self.assertEqual(self.db.next_pending_frame(self.video["id"], 20), 40)
         self.assertEqual(self.db.next_pending_frame(self.video["id"], 40), 20)
 
+    def test_annotated_frame_numbers_are_materialized_before_database_closes(self):
+        self.add(0, 10)
+        self.add(0, 30, "pending", "tracker")
+        self.add(0, 50)
+
+        self.assertEqual(self.db.annotated_frame_numbers_in_range(self.video["id"], 0, 40), [10, 30])
+
     def test_playback_tracker_proposals_are_inserted_once_per_frame_batch(self):
         proposals = [
             {
@@ -166,6 +173,9 @@ class DatabaseWorkflowTests(unittest.TestCase):
         self.add(0, 20)
         self.db.set_frame_reviewed(self.video["id"], 20, True)
         self.assertEqual(self.db.maxn_summary(self.video["id"])[0]["maxn"], 1)
+        live = self.db.maxn_summary(self.video["id"], reviewed_only=False)
+        self.assertEqual(live[0]["maxn"], 2)
+        self.assertEqual(live[0]["frame_number"], 10)
         self.db.set_frame_reviewed(self.video["id"], 10, True)
         self.assertEqual(self.db.maxn_summary(self.video["id"])[0]["maxn"], 2)
 

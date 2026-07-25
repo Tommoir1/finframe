@@ -513,10 +513,21 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.setMaximumHeight(245)
-        self.maxn_table = QTableWidget(0, 5)
-        self.maxn_table.setHorizontalHeaderLabels(["Species", "Code", "MaxN", "Peak frame", "Peak time"])
+        maxn_tab = QWidget()
+        maxn_layout = QVBoxLayout(maxn_tab)
+        maxn_layout.setContentsMargins(8, 8, 8, 8)
+        self.maxn_status = QLabel(
+            "Live MaxN updates from verified boxes; Final MaxN includes completed frames only."
+        )
+        self.maxn_status.setWordWrap(True)
+        self.maxn_table = QTableWidget(0, 6)
+        self.maxn_table.setHorizontalHeaderLabels(
+            ["Species", "Code", "Live MaxN", "Final MaxN", "Live peak frame", "Live peak time"]
+        )
         self.maxn_table.horizontalHeader().setStretchLastSection(True)
-        tabs.addTab(self.maxn_table, "MaxN summary")
+        maxn_layout.addWidget(self.maxn_status)
+        maxn_layout.addWidget(self.maxn_table, 1)
+        tabs.addTab(maxn_tab, "MaxN summary")
         dataset_tab = QWidget()
         dataset_layout = QVBoxLayout(dataset_tab)
         self.dataset_stats = QLabel("0 verified observation boxes · 0 complete frames · 0 selected training keyframes")
@@ -1503,12 +1514,35 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Tracking complete", f"{added:,} pending tracked boxes were created. They remain excluded until students approve or correct them.")
 
     def refresh_maxn(self) -> None:
-        rows = self.db.maxn_summary(self.current_video["id"]) if self.current_video else []
-        self.maxn_table.setRowCount(len(rows))
-        for row, item in enumerate(rows):
-            values = [item["common_name"], item["code"], item["maxn"], item["frame_number"], self._timecode(item["time_seconds"])]
+        if not self.current_video:
+            live_rows, final_rows = [], []
+        else:
+            live_rows = self.db.maxn_summary(self.current_video["id"], reviewed_only=False)
+            final_rows = self.db.maxn_summary(self.current_video["id"], reviewed_only=True)
+        final_by_species = {item["species_id"]: item for item in final_rows}
+        self.maxn_table.setRowCount(len(live_rows))
+        for row, item in enumerate(live_rows):
+            final = final_by_species.get(item["species_id"])
+            values = [
+                item["common_name"],
+                item["code"],
+                item["maxn"],
+                final["maxn"] if final else "—",
+                item["frame_number"],
+                self._timecode(item["time_seconds"]),
+            ]
             for column, value in enumerate(values):
                 self.maxn_table.setItem(row, column, QTableWidgetItem(str(value)))
+        if not live_rows:
+            self.maxn_status.setText("No verified boxes yet. Draw boxes or approve proposals to begin Live MaxN.")
+        elif not final_rows:
+            self.maxn_status.setText(
+                "Live MaxN is updating. Complete a frame or approve a watched segment to establish Final MaxN."
+            )
+        else:
+            self.maxn_status.setText(
+                "Live MaxN includes every verified box; Final MaxN includes completed frames only. Pending proposals count after approval."
+            )
 
     def training_threshold_changed(self, value: int) -> None:
         self.training.update_policy(retrain_every_verified=value)

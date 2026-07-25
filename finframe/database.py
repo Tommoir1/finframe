@@ -698,12 +698,11 @@ class Database:
     def annotated_frame_numbers_in_range(self, video_id: str, start_frame: int, end_frame: int) -> list[int]:
         first, last = sorted((int(start_frame), int(end_frame)))
         with self.connect() as db:
-            rows = db.execute(
+            return [int(row[0]) for row in db.execute(
                 """SELECT DISTINCT f.frame_number FROM frames f JOIN annotations a ON a.frame_id=f.id
                    WHERE f.video_id=? AND f.frame_number BETWEEN ? AND ? ORDER BY f.frame_number""",
                 (video_id, first, last),
-            )
-        return [int(row[0]) for row in rows]
+            )]
 
     def annotations_for_frame(self, video_id: str, frame_number: int, *, include_rejected: bool = False) -> list[dict[str, Any]]:
         query = """SELECT a.*,s.common_name,s.scientific_name,s.code,s.color,
@@ -810,13 +809,14 @@ class Database:
                 (video_id, frame_number),
             ))
 
-    def maxn_summary(self, video_id: str) -> list[dict[str, Any]]:
+    def maxn_summary(self, video_id: str, *, reviewed_only: bool = True) -> list[dict[str, Any]]:
+        review_filter = "AND f.reviewed=1" if reviewed_only else ""
         with self.connect() as db:
             return self._rows(db.execute(
-                """WITH counts AS (
+                f"""WITH counts AS (
                        SELECT f.id AS frame_id,f.frame_number,f.time_seconds,a.species_id,COUNT(*) AS fish_count
                        FROM frames f JOIN annotations a ON a.frame_id=f.id
-                       WHERE f.video_id=? AND f.reviewed=1 AND a.status='verified'
+                       WHERE f.video_id=? {review_filter} AND a.status='verified'
                        GROUP BY f.id,a.species_id
                    ), ranked AS (
                        SELECT counts.*,ROW_NUMBER() OVER(PARTITION BY species_id ORDER BY fish_count DESC,frame_number ASC) AS rank
