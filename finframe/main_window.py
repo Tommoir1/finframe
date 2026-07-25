@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -301,6 +303,12 @@ class MainWindow(QMainWindow):
         self.current_image: Any | None = None
         self.current_frame = 0
         self.selected_annotation_id: str | None = None
+        self._annotation_editor_dirty = False
+        self._loading_annotation_editor = False
+        self.annotation_autosave_timer = QTimer(self)
+        self.annotation_autosave_timer.setSingleShot(True)
+        self.annotation_autosave_timer.setInterval(300)
+        self.annotation_autosave_timer.timeout.connect(self.autosave_annotation_changes)
         self.review_segment_start: int | None = None
         self.tracking_worker: TrackingWorker | None = None
         self.playback_worker: PlaybackWorker | None = None
@@ -450,7 +458,18 @@ class MainWindow(QMainWindow):
         splitter.addWidget(video_panel)
 
         self.annotation_panel = QGroupBox("Frame annotations")
-        annotation_layout = QVBoxLayout(self.annotation_panel)
+        self.annotation_panel.setMinimumWidth(400)
+        annotation_outer = QVBoxLayout(self.annotation_panel)
+        annotation_outer.setContentsMargins(6, 8, 6, 6)
+        annotation_scroll = QScrollArea()
+        annotation_scroll.setWidgetResizable(True)
+        annotation_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        annotation_scroll.setObjectName("annotationScroll")
+        annotation_content = QWidget()
+        annotation_layout = QVBoxLayout(annotation_content)
+        annotation_layout.setContentsMargins(4, 4, 4, 4)
+        annotation_scroll.setWidget(annotation_content)
+        annotation_outer.addWidget(annotation_scroll)
         self.frame_counts = QLabel("Verified fish: 0")
         self.frame_complete = QCheckBox("Frame complete — all visible fish are boxed")
         self.frame_complete.toggled.connect(self.frame_complete_toggled)
@@ -461,7 +480,14 @@ class MainWindow(QMainWindow):
         self.annotation_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.annotation_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.annotation_table.itemSelectionChanged.connect(self.annotation_selected)
-        self.annotation_table.horizontalHeader().setStretchLastSection(True)
+        self.annotation_table.setMinimumHeight(185)
+        annotation_header = self.annotation_table.horizontalHeader()
+        annotation_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        annotation_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        annotation_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        annotation_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        annotation_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.annotation_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         annotation_layout.addWidget(self.frame_counts)
         annotation_layout.addWidget(self.frame_complete)
         annotation_layout.addWidget(self.training_keyframe_status)
@@ -475,6 +501,12 @@ class MainWindow(QMainWindow):
         self.annotation_activity = QComboBox()
         self.annotation_activity.addItems(["Passing", "Feeding", "Schooling", "Resting", "Unknown"])
         self.annotation_uncertain = QCheckBox("Uncertain")
+        self.annotation_species.currentIndexChanged.connect(self.annotation_editor_changed)
+        self.annotation_track.textEdited.connect(self.annotation_editor_changed)
+        self.annotation_track.editingFinished.connect(self.autosave_annotation_changes)
+        self.annotation_stage.currentIndexChanged.connect(self.annotation_editor_changed)
+        self.annotation_activity.currentIndexChanged.connect(self.annotation_editor_changed)
+        self.annotation_uncertain.toggled.connect(self.annotation_editor_changed)
         form.addRow("Species", self.annotation_species)
         form.addRow("Track ID", self.annotation_track)
         form.addRow("Life stage", self.annotation_stage)
@@ -482,9 +514,6 @@ class MainWindow(QMainWindow):
         form.addRow("", self.annotation_uncertain)
         annotation_layout.addLayout(form)
         action_row = QGridLayout()
-        self.save_annotation_button = QPushButton("Save changes")
-        self.save_annotation_button.clicked.connect(self.save_annotation_changes)
-        self.save_annotation_button.setEnabled(False)
         self.approve_button = QPushButton("Approve proposal")
         self.approve_button.clicked.connect(self.approve_annotation)
         self.approve_button.setEnabled(False)
@@ -505,17 +534,17 @@ class MainWindow(QMainWindow):
         self.clear_video_boxes_button.setToolTip("Permanently delete every bounding box from the selected video")
         self.clear_video_boxes_button.setEnabled(False)
         self.clear_video_boxes_button.clicked.connect(self.clear_all_video_boxes)
-        action_row.addWidget(self.save_annotation_button, 0, 0, 1, 2)
-        action_row.addWidget(self.approve_button, 1, 0)
-        action_row.addWidget(self.reject_button, 1, 1)
-        action_row.addWidget(self.approve_frame_button, 2, 0, 1, 2)
-        action_row.addWidget(next_pending_button, 3, 0, 1, 2)
-        action_row.addWidget(self.approve_segment_button, 4, 0, 1, 2)
-        action_row.addWidget(delete_button, 5, 0, 1, 2)
-        action_row.addWidget(self.clear_video_boxes_button, 6, 0, 1, 2)
+        action_row.addWidget(self.approve_button, 0, 0)
+        action_row.addWidget(self.reject_button, 0, 1)
+        action_row.addWidget(self.approve_frame_button, 1, 0, 1, 2)
+        action_row.addWidget(next_pending_button, 2, 0, 1, 2)
+        action_row.addWidget(self.approve_segment_button, 3, 0, 1, 2)
+        action_row.addWidget(delete_button, 4, 0, 1, 2)
+        action_row.addWidget(self.clear_video_boxes_button, 5, 0, 1, 2)
         annotation_layout.addLayout(action_row)
+        annotation_layout.addStretch(1)
         splitter.addWidget(self.annotation_panel)
-        splitter.setSizes([240, 900, 330])
+        splitter.setSizes([230, 830, 420])
 
         tabs = QTabWidget()
         tabs.setMaximumHeight(245)
@@ -596,6 +625,7 @@ class MainWindow(QMainWindow):
             QPushButton#dangerButton:hover { background: #ffe4de; }
             QLineEdit, QComboBox, QSpinBox, QTextEdit { background: white; border: 1px solid #b8c8c1; border-radius: 5px; padding: 5px; }
             QTableWidget, QListWidget { background: white; border: 1px solid #cbd8d2; alternate-background-color: #f4f8f6; }
+            QScrollArea#annotationScroll { border: 0; background: transparent; }
             QHeaderView::section { background: #e8efeb; padding: 5px; border: 0; border-bottom: 1px solid #bdccc5; }
             QTabWidget::pane { border: 1px solid #cbd8d2; background: white; }
             QTabBar::tab { padding: 7px 16px; background: #e4ece8; }
@@ -605,6 +635,9 @@ class MainWindow(QMainWindow):
         """)
 
     def closeEvent(self, event: Any) -> None:
+        if not self._persist_selected_annotation():
+            event.ignore()
+            return
         self.stop_playback(refresh=False)
         if hasattr(self, "training_timer"):
             self.training_timer.stop()
@@ -698,6 +731,8 @@ class MainWindow(QMainWindow):
         self.refresh_projects(self.current_project["id"])
 
     def project_changed(self, index: int) -> None:
+        if not self._persist_selected_annotation():
+            return
         self.stop_playback(refresh=False)
         project_id = self.project_combo.itemData(index)
         self.current_project = self.db.get_project(project_id) if project_id else None
@@ -837,6 +872,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Some images were skipped", "OpenCV could not read:\n" + "\n".join(unreadable))
 
     def video_changed(self, index: int) -> None:
+        if not self._persist_selected_annotation():
+            return
         self.stop_playback(refresh=False)
         video_id = self.video_combo.itemData(index)
         if not video_id:
@@ -963,6 +1000,8 @@ class MainWindow(QMainWindow):
             self.stop_playback(refresh=False)
         frame_number = max(0, min(int(self.current_video["frame_count"]) - 1, int(frame_number)))
         previous_frame = self.current_frame
+        if frame_number != previous_frame and not self._persist_selected_annotation():
+            return
         if self.current_image is not None and frame_number != previous_frame:
             self.seed_tracking.clear()
             self.review_segment_start = None
@@ -1012,6 +1051,8 @@ class MainWindow(QMainWindow):
             return
         if self.playback_worker and self.playback_worker.isRunning():
             self.stop_playback(refresh=True)
+            return
+        if not self._persist_selected_annotation():
             return
         if self.current_frame >= int(self.current_video["frame_count"]) - 1:
             self.seek_frame(0)
@@ -1140,12 +1181,16 @@ class MainWindow(QMainWindow):
                 self.species_list.setCurrentItem(row)
         if self.species_list.count() and self.species_list.currentRow() < 0:
             self.species_list.setCurrentRow(0)
-        self.annotation_species.clear()
-        for item in self.db.list_species():
-            self.annotation_species.addItem(f"{item['common_name']} · {item['code']}", item["id"])
-        if self.selected_annotation_id is not None and editor_species:
-            self.annotation_species.setCurrentIndex(self.annotation_species.findData(editor_species))
-        else:
+        self._loading_annotation_editor = True
+        try:
+            self.annotation_species.clear()
+            for item in self.db.list_species():
+                self.annotation_species.addItem(f"{item['common_name']} · {item['code']}", item["id"])
+            if self.selected_annotation_id is not None and editor_species:
+                self.annotation_species.setCurrentIndex(self.annotation_species.findData(editor_species))
+        finally:
+            self._loading_annotation_editor = False
+        if self.selected_annotation_id is None:
             self._show_active_species_in_editor()
 
     def active_species_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -1156,26 +1201,95 @@ class MainWindow(QMainWindow):
         item = item or self.species_list.currentItem()
         species_id = item.data(Qt.ItemDataRole.UserRole) if item else None
         index = self.annotation_species.findData(species_id) if species_id else -1
-        if index >= 0:
-            with QSignalBlocker(self.annotation_species):
+        self.annotation_autosave_timer.stop()
+        self._annotation_editor_dirty = False
+        self._loading_annotation_editor = True
+        try:
+            if index >= 0:
                 self.annotation_species.setCurrentIndex(index)
-            species_name = item.text().splitlines()[0]
-            self.annotation_editor_status.setText(f"Next box species: {species_name}")
-        else:
-            self.annotation_editor_status.setText("Select a species on the left before drawing")
-        self.annotation_track.clear()
-        self.annotation_stage.setCurrentText("Adult")
-        self.annotation_activity.setCurrentText("Passing")
-        self.annotation_uncertain.setChecked(False)
+                species_name = item.text().splitlines()[0]
+                self.annotation_editor_status.setText(f"Next box species: {species_name}")
+            else:
+                self.annotation_editor_status.setText("Select a species on the left before drawing")
+            self.annotation_track.clear()
+            self.annotation_stage.setCurrentText("Adult")
+            self.annotation_activity.setCurrentText("Passing")
+            self.annotation_uncertain.setChecked(False)
+        finally:
+            self._loading_annotation_editor = False
         for control in (
             self.annotation_species,
             self.annotation_track,
             self.annotation_stage,
             self.annotation_activity,
             self.annotation_uncertain,
-            self.save_annotation_button,
         ):
             control.setEnabled(False)
+
+    def annotation_editor_changed(self, *_args: Any) -> None:
+        if self._loading_annotation_editor or not self.selected_annotation_id:
+            return
+        self._annotation_editor_dirty = True
+        self.annotation_editor_status.setText("Editing selected box · saving automatically…")
+        self.annotation_autosave_timer.start()
+
+    def autosave_annotation_changes(self, *_args: Any) -> None:
+        self._persist_selected_annotation()
+
+    def _persist_selected_annotation(self) -> bool:
+        if not self.selected_annotation_id or not self._annotation_editor_dirty:
+            return True
+        annotation_id = self.selected_annotation_id
+        try:
+            before = self.db.get_annotation(annotation_id)
+            updated = self.db.update_annotation(
+                annotation_id,
+                species_id=self.annotation_species.currentData(),
+                track_id=self.annotation_track.text().strip() or before["track_id"],
+                life_stage=self.annotation_stage.currentText(),
+                activity=self.annotation_activity.currentText(),
+                uncertain=int(self.annotation_uncertain.isChecked()),
+            )
+        except Exception as exc:
+            self.annotation_editor_status.setText("Could not save changes")
+            QMessageBox.warning(self, "Could not save annotation", str(exc))
+            return False
+        self.annotation_autosave_timer.stop()
+        self._annotation_editor_dirty = False
+        changed = any(
+            before[key] != updated[key]
+            for key in ("species_id", "track_id", "life_stage", "activity", "uncertain")
+        )
+        if before["track_id"] != updated["track_id"]:
+            self.seed_tracking.stop(before["track_id"])
+        self._seed_annotation(updated)
+        self.annotation_editor_status.setText(
+            f"Editing selected box: {updated['common_name']} · changes saved automatically"
+        )
+        for row in range(self.annotation_table.rowCount()):
+            table_item = self.annotation_table.item(row, 0)
+            if table_item and table_item.data(Qt.ItemDataRole.UserRole) == annotation_id:
+                self.annotation_table.item(row, 1).setText(updated["common_name"])
+                self.annotation_table.item(row, 2).setText(updated["track_id"])
+                break
+        if changed and self.current_video:
+            annotations = self.db.annotations_for_frame(self.current_video["id"], self.current_frame)
+            self.canvas.set_annotations(annotations)
+            verified_count = sum(item["status"] == "verified" for item in annotations)
+            pending_count = sum(item["status"] == "pending" for item in annotations)
+            frame = self.db.get_frame(self.current_video["id"], self.current_frame)
+            with QSignalBlocker(self.frame_complete):
+                self.frame_complete.setChecked(bool(frame["reviewed"]))
+            completeness = "complete" if frame["reviewed"] else "incomplete"
+            self.frame_counts.setText(
+                f"Verified fish: {verified_count} · Pending proposals: {pending_count} · {completeness}"
+            )
+            if not frame["reviewed"]:
+                self.training_keyframe_status.setText("Not complete; excluded from final MaxN and training")
+            self.refresh_maxn()
+            if before["status"] == "verified":
+                self.training.maybe_schedule("verified annotation corrected")
+        return True
 
     def add_species(self) -> None:
         common, ok = QInputDialog.getText(self, "Add species", "Common name")
@@ -1246,6 +1360,8 @@ class MainWindow(QMainWindow):
     def frame_complete_toggled(self, complete: bool) -> None:
         if not self.current_video:
             return
+        if not self._persist_selected_annotation():
+            return
         try:
             frame = self.db.set_frame_reviewed(self.current_video["id"], self.current_frame, complete)
             if frame["reviewed"] and frame["training_selected"]:
@@ -1260,29 +1376,38 @@ class MainWindow(QMainWindow):
         if not self.current_video:
             self.canvas.set_annotations([])
             return
+        if not self._loading_annotation_editor and not self._persist_selected_annotation():
+            return
         annotations = self.db.annotations_for_frame(self.current_video["id"], self.current_frame)
-        if self.selected_annotation_id and not any(
-            annotation["id"] == self.selected_annotation_id for annotation in annotations
-        ):
+        selected_annotation = next(
+            (annotation for annotation in annotations if annotation["id"] == self.selected_annotation_id),
+            None,
+        )
+        if self.selected_annotation_id and selected_annotation is None:
+            self.annotation_autosave_timer.stop()
+            self._annotation_editor_dirty = False
             self.selected_annotation_id = None
         self.canvas.set_annotations(annotations)
-        self.annotation_table.setRowCount(len(annotations))
-        for row, annotation in enumerate(annotations):
-            values = [
-                annotation["status"].title(),
-                annotation["common_name"],
-                annotation["track_id"],
-                annotation["source"].replace("_", " ").title(),
-                f"{annotation['confidence'] * 100:.0f}%" if annotation["confidence"] is not None else "—",
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, annotation["id"])
-                self.annotation_table.setItem(row, column, item)
-            if annotation["id"] == self.selected_annotation_id:
-                self.annotation_table.selectRow(row)
-        if self.selected_annotation_id is None:
+        with QSignalBlocker(self.annotation_table):
+            self.annotation_table.setRowCount(len(annotations))
+            for row, annotation in enumerate(annotations):
+                values = [
+                    annotation["status"].title(),
+                    annotation["common_name"],
+                    annotation["track_id"],
+                    annotation["source"].replace("_", " ").title(),
+                    f"{annotation['confidence'] * 100:.0f}%" if annotation["confidence"] is not None else "—",
+                ]
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if column == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, annotation["id"])
+                    self.annotation_table.setItem(row, column, item)
+                if annotation["id"] == self.selected_annotation_id:
+                    self.annotation_table.selectRow(row)
+        if selected_annotation is not None:
+            self._load_annotation_editor(selected_annotation)
+        else:
             self._show_active_species_in_editor()
         verified_count = sum(item["status"] == "verified" for item in annotations)
         pending_count = sum(item["status"] == "pending" for item in annotations)
@@ -1313,6 +1438,10 @@ class MainWindow(QMainWindow):
         self.select_annotation_by_id(annotation_id)
 
     def select_annotation_by_id(self, annotation_id: str | None) -> None:
+        previous_id = self.selected_annotation_id
+        if annotation_id != previous_id and not self._persist_selected_annotation():
+            self.canvas.select_annotation(previous_id)
+            return
         self.selected_annotation_id = annotation_id
         self.canvas.select_annotation(annotation_id)
         if not annotation_id:
@@ -1323,48 +1452,46 @@ class MainWindow(QMainWindow):
             self.reject_button.setEnabled(False)
             return
         annotation = self.db.get_annotation(annotation_id)
-        self.annotation_editor_status.setText(f"Editing selected box: {annotation['common_name']}")
+        with QSignalBlocker(self.annotation_table):
+            for row in range(self.annotation_table.rowCount()):
+                item = self.annotation_table.item(row, 0)
+                if item and item.data(Qt.ItemDataRole.UserRole) == annotation_id:
+                    self.annotation_table.selectRow(row)
+                    break
+        self._load_annotation_editor(annotation)
+
+    def _load_annotation_editor(self, annotation: dict[str, Any]) -> None:
+        self.annotation_autosave_timer.stop()
+        self._annotation_editor_dirty = False
+        self._loading_annotation_editor = True
+        self.annotation_editor_status.setText(
+            f"Editing selected box: {annotation['common_name']} · changes save automatically"
+        )
         for control in (
             self.annotation_species,
             self.annotation_track,
             self.annotation_stage,
             self.annotation_activity,
             self.annotation_uncertain,
-            self.save_annotation_button,
         ):
             control.setEnabled(True)
-        self.annotation_species.setCurrentIndex(self.annotation_species.findData(annotation["species_id"]))
-        self.annotation_track.setText(annotation["track_id"])
-        self.annotation_stage.setCurrentText(annotation["life_stage"])
-        self.annotation_activity.setCurrentText(annotation["activity"])
-        self.annotation_uncertain.setChecked(bool(annotation["uncertain"]))
+        try:
+            self.annotation_species.setCurrentIndex(self.annotation_species.findData(annotation["species_id"]))
+            self.annotation_track.setText(annotation["track_id"])
+            self.annotation_stage.setCurrentText(annotation["life_stage"])
+            self.annotation_activity.setCurrentText(annotation["activity"])
+            self.annotation_uncertain.setChecked(bool(annotation["uncertain"]))
+        finally:
+            self._loading_annotation_editor = False
         pending = annotation["status"] == "pending"
         self.approve_button.setEnabled(pending)
         self.reject_button.setEnabled(pending)
 
-    def save_annotation_changes(self) -> None:
-        if not self.selected_annotation_id:
-            return
-        before = self.db.get_annotation(self.selected_annotation_id)
-        updated = self.db.update_annotation(
-            self.selected_annotation_id,
-            species_id=self.annotation_species.currentData(),
-            track_id=self.annotation_track.text().strip(),
-            life_stage=self.annotation_stage.currentText(),
-            activity=self.annotation_activity.currentText(),
-            uncertain=int(self.annotation_uncertain.isChecked()),
-        )
-        if before["track_id"] != updated["track_id"]:
-            self.seed_tracking.stop(before["track_id"])
-        self._seed_annotation(updated)
-        self.refresh_frame_annotations()
-        if before["status"] == "verified":
-            self.training.maybe_schedule("verified annotation corrected")
-
     def approve_annotation(self) -> None:
         if not self.selected_annotation_id:
             return
-        self.save_annotation_changes()
+        if not self._persist_selected_annotation():
+            return
         self.db.review_annotation(self.selected_annotation_id, "approve")
         self.refresh_frame_annotations()
         self.training.maybe_schedule("AI proposal approved or corrected")
@@ -1382,6 +1509,8 @@ class MainWindow(QMainWindow):
     def approve_frame_proposals(self) -> None:
         if not self.current_video:
             return
+        if not self._persist_selected_annotation():
+            return
         pending = [item for item in self.db.annotations_for_frame(self.current_video["id"], self.current_frame) if item["status"] == "pending"]
         if not pending:
             return
@@ -1398,6 +1527,8 @@ class MainWindow(QMainWindow):
 
     def approve_watched_segment(self) -> None:
         if not self.current_video or self.current_video.get("media_type") != "video":
+            return
+        if not self._persist_selected_annotation():
             return
         start = self.review_segment_start if self.review_segment_start is not None else self.current_frame
         end = self.current_frame

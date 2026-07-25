@@ -26,7 +26,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - Native PySide6 desktop interface; no browser or separate local web server
 - First-class still-image annotation with multi-file and recursive folder import; Image arrows move through the imported photo set
 - Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
-- Bounding-box drawing, selection, movement and resizing
+- Bounding-box drawing, selection, movement and resizing, with annotation details saved automatically
 - Opt-in experimental box-seeded propagation during continuous playback, with corrected boxes re-seeding the tracker
 - Shared 99-species taxonomy populated from `species_list.xlsx` → first `Master Sheet`, with search-as-you-type selection, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution

@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 from PySide6.QtCore import QEventLoop, QTimer, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from finframe.database import Database
@@ -106,6 +107,8 @@ class DesktopMediaTests(unittest.TestCase):
             video_layout = window.canvas.parentWidget().layout()
             self.assertEqual(video_layout.indexOf(window.timeline_row), video_layout.indexOf(window.canvas) + 1)
             self.assertIs(window.timeline.parentWidget(), window.timeline_row)
+            self.assertGreaterEqual(window.annotation_panel.minimumWidth(), 400)
+            self.assertGreaterEqual(window.annotation_table.minimumHeight(), 180)
             self.assertFalse(window.seed_tracking_checkbox.isChecked())
             self.assertEqual(window.seed_tracking_status.text(), "Propagation off")
             species_texts = [window.species_list.item(index).text() for index in range(window.species_list.count())]
@@ -140,6 +143,11 @@ class DesktopMediaTests(unittest.TestCase):
                 species_id=species[0]["id"], track_id="FISH-001", box=(.1, .1, .2, .2),
                 status="verified", source="manual",
             )
+            second_annotation = db.add_annotation(
+                video_id=media["id"], frame_number=0, time_seconds=0,
+                species_id=species[0]["id"], track_id="FISH-002", box=(.4, .1, .2, .2),
+                status="verified", source="manual",
+            )
             window = MainWindow(db, root, show_startup_prompt=False)
             window.refresh_projects(project["id"])
             window.video_combo.setCurrentIndex(window.video_combo.findData(media["id"]))
@@ -154,6 +162,21 @@ class DesktopMediaTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual(window.annotation_species.currentData(), species[0]["id"])
             self.assertEqual(db.get_annotation(annotation["id"])["species_id"], species[0]["id"])
+
+            window.annotation_species.setCurrentIndex(window.annotation_species.findData(species[1]["id"]))
+            window.annotation_stage.setCurrentText("Juvenile")
+            window.annotation_track.setFocus()
+            window.annotation_track.selectAll()
+            QTest.keyClicks(window.annotation_track, "EDITED-001")
+            window.select_annotation_by_id(second_annotation["id"])
+            saved = db.get_annotation(annotation["id"])
+            self.assertEqual(saved["species_id"], species[1]["id"])
+            self.assertEqual(saved["life_stage"], "Juvenile")
+            self.assertEqual(saved["track_id"], "EDITED-001")
+
+            window.annotation_activity.setCurrentText("Feeding")
+            QTest.qWait(350)
+            self.assertEqual(db.get_annotation(second_annotation["id"])["activity"], "Feeding")
 
             window.select_annotation_by_id(None)
             self.assertEqual(window.annotation_species.currentData(), species[1]["id"])
