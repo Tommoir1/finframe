@@ -542,6 +542,11 @@ class MainWindow(QMainWindow):
         self.canvas.selectionChanged.connect(self.select_annotation_by_id)
         self.canvas.samPointCreated.connect(self.sam_point_added)
         video_layout.addWidget(self.canvas, 1)
+        self.media_navigation_panel = QWidget()
+        self.media_navigation_panel.setObjectName("mediaNavigationPanel")
+        navigation_layout = QVBoxLayout(self.media_navigation_panel)
+        navigation_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_layout.setSpacing(4)
         self.timeline_row = QWidget()
         self.timeline_row.setObjectName("timelineRow")
         self.timeline_row.setMinimumHeight(30)
@@ -550,8 +555,11 @@ class MainWindow(QMainWindow):
         self.timeline = QSlider(Qt.Orientation.Horizontal)
         self.timeline.valueChanged.connect(self.seek_frame)
         timeline_layout.addWidget(self.timeline, 1)
-        video_layout.addWidget(self.timeline_row)
-        controls = QHBoxLayout()
+        navigation_layout.addWidget(self.timeline_row)
+        self.playback_controls_row = QWidget()
+        self.playback_controls_row.setObjectName("playbackControlsRow")
+        controls = QHBoxLayout(self.playback_controls_row)
+        controls.setContentsMargins(0, 0, 0, 0)
         self.play_button = QPushButton("▶")
         self.play_button.clicked.connect(self.toggle_playback)
         self.previous_button = QPushButton("◀ Frame")
@@ -564,7 +572,8 @@ class MainWindow(QMainWindow):
         self.forward_button.clicked.connect(lambda: self.seek_video_relative(round(self._fps() * 5)))
         for widget in (self.play_button, self.previous_button, self.following_button, self.back_button, self.forward_button):
             controls.addWidget(widget)
-        controls.addWidget(QLabel("Speed"))
+        self.speed_label = QLabel("Speed")
+        controls.addWidget(self.speed_label)
         self.playback_speed = QComboBox()
         for speed in (0.5, 1, 1.5, 2, 3, 4, 5, 6):
             self.playback_speed.addItem(f"{speed:g}×", speed)
@@ -575,7 +584,13 @@ class MainWindow(QMainWindow):
         self.frame_label = QLabel("No media")
         self.frame_label.setObjectName("mediaPositionLabel")
         controls.addWidget(self.frame_label)
-        video_layout.addLayout(controls)
+        navigation_layout.addWidget(self.playback_controls_row)
+        video_layout.addWidget(
+            self.media_navigation_panel,
+            0,
+            Qt.AlignmentFlag.AlignHCenter,
+        )
+        self.canvas.imageRectChanged.connect(self.align_media_navigation)
         seed_controls = QHBoxLayout()
         self.seed_tracking_checkbox = QCheckBox("Enable box propagation while playing (experimental)")
         self.seed_tracking_checkbox.setToolTip(
@@ -1126,6 +1141,15 @@ class MainWindow(QMainWindow):
         detail = "still image" if kind == "image" else f"{video['fps']:.2f} fps"
         self.statusBar().showMessage(f"Opened {kind} {video['file_name']} · {video['width']}×{video['height']} · {detail}")
 
+    def align_media_navigation(self, image_rect: Any) -> None:
+        if not hasattr(self, "media_navigation_panel"):
+            return
+        rendered_width = max(
+            1,
+            min(self.canvas.width(), int(round(float(image_rect.width())))),
+        )
+        self.media_navigation_panel.setFixedWidth(rendered_width)
+
     def _configure_media_controls(self) -> None:
         playable = bool(
             self.current_video
@@ -1161,7 +1185,16 @@ class MainWindow(QMainWindow):
             f"Permanently delete every bounding box from the selected {media_noun}"
         )
         self.clear_video_boxes_button.setEnabled(has_media and not playing)
+        self.media_navigation_panel.setVisible(has_media)
         self.timeline_row.setVisible(has_media and not is_image)
+        for video_only_control in (
+            self.play_button,
+            self.back_button,
+            self.forward_button,
+            self.speed_label,
+            self.playback_speed,
+        ):
+            video_only_control.setVisible(has_media and not is_image)
         self.previous_button.setText("◀ Image" if is_image else "◀ Frame")
         self.following_button.setText("Image ▶" if is_image else "Frame ▶")
         self.previous_button.setEnabled(playable or (is_image and self._adjacent_image_index(-1) is not None))

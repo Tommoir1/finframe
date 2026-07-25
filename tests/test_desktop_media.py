@@ -118,6 +118,8 @@ class DesktopMediaTests(unittest.TestCase):
             window = MainWindow(db, root, show_startup_prompt=False)
             window.refresh_projects(project["id"])
             window.video_combo.setCurrentIndex(window.video_combo.findData(media[0]["id"]))
+            window.resize(1480, 920)
+            window.show()
             self.app.processEvents()
 
             self.assertTrue(window.clear_video_boxes_button.isEnabled())
@@ -126,7 +128,20 @@ class DesktopMediaTests(unittest.TestCase):
                 "Clear all boxes from this image",
             )
             self.assertTrue(window.timeline_row.isHidden())
+            self.assertTrue(window.play_button.isHidden())
+            self.assertTrue(window.playback_speed.isHidden())
             self.assertEqual(window.frame_label.text(), "Image 1 of 2")
+            self.assertLessEqual(
+                abs(
+                    window.media_navigation_panel.width()
+                    - round(window.canvas._image_rect().width())
+                ),
+                1,
+            )
+            self.assertLess(
+                window.canvas.geometry().bottom(),
+                window.media_navigation_panel.geometry().top(),
+            )
             with patch(
                 "finframe.main_window.QMessageBox.question",
                 return_value=QMessageBox.StandardButton.Yes,
@@ -168,8 +183,13 @@ class DesktopMediaTests(unittest.TestCase):
             window.refresh_projects(project["id"])
 
             video_layout = window.canvas.parentWidget().layout()
-            self.assertEqual(video_layout.indexOf(window.timeline_row), video_layout.indexOf(window.canvas) + 1)
+            self.assertEqual(
+                video_layout.indexOf(window.media_navigation_panel),
+                video_layout.indexOf(window.canvas) + 1,
+            )
+            self.assertIs(window.timeline_row.parentWidget(), window.media_navigation_panel)
             self.assertIs(window.timeline.parentWidget(), window.timeline_row)
+            self.assertIs(window.frame_label.parentWidget(), window.playback_controls_row)
             self.assertGreaterEqual(window.annotation_panel.minimumWidth(), 400)
             self.assertGreaterEqual(window.annotation_table.minimumHeight(), 180)
             self.assertFalse(window.seed_tracking_checkbox.isChecked())
@@ -459,6 +479,8 @@ class DesktopMediaTests(unittest.TestCase):
             window.seed_tracking = SeedTrackingSession(tracker_factory=StableTracker)
             window.refresh_projects(project["id"])
             window.video_combo.setCurrentIndex(window.video_combo.findData(video["id"]))
+            window.resize(1480, 920)
+            window.show()
             self.app.processEvents()
 
             window.create_manual_box((.1, .1, .2, .2))
@@ -502,6 +524,8 @@ class DesktopMediaTests(unittest.TestCase):
             window = MainWindow(db, root, show_startup_prompt=False)
             window.refresh_projects(project["id"])
             window.video_combo.setCurrentIndex(window.video_combo.findData(video["id"]))
+            window.resize(1480, 920)
+            window.show()
             self.app.processEvents()
 
             self.assertTrue(window.clear_video_boxes_button.isEnabled())
@@ -510,6 +534,19 @@ class DesktopMediaTests(unittest.TestCase):
                 "Clear all boxes from this video",
             )
             self.assertFalse(window.timeline_row.isHidden())
+            self.assertFalse(window.play_button.isHidden())
+            self.assertFalse(window.playback_speed.isHidden())
+            self.assertLessEqual(
+                abs(
+                    window.media_navigation_panel.width()
+                    - round(window.canvas._image_rect().width())
+                ),
+                1,
+            )
+            self.assertLess(
+                window.canvas.geometry().bottom(),
+                window.media_navigation_panel.geometry().top(),
+            )
             with patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
                 window.clear_all_video_boxes()
 

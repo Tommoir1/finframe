@@ -15,10 +15,13 @@ class AnnotationCanvas(QWidget):
     boxChanged = Signal(str, tuple)
     selectionChanged = Signal(object)
     samPointCreated = Signal(tuple, int)
+    imageRectChanged = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setMinimumSize(720, 420)
+        # Keep the media usable on smaller laptop displays without forcing the
+        # navigation rows to overlap the bottom of the rendered frame.
+        self.setMinimumSize(480, 270)
         self.setMouseTracking(True)
         self._image: QImage | None = None
         self._annotations: list[dict[str, Any]] = []
@@ -34,7 +37,12 @@ class AnnotationCanvas(QWidget):
 
     def set_frame(self, image: QImage | None) -> None:
         self._image = image
+        self.imageRectChanged.emit(self._image_rect())
         self.update()
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self.imageRectChanged.emit(self._image_rect())
 
     def set_annotations(self, annotations: list[dict[str, Any]]) -> None:
         self._annotations = annotations
