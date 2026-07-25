@@ -188,6 +188,14 @@ class Database:
                     "INSERT OR IGNORE INTO species(id, common_name, scientific_name, code, color, created_at) VALUES(?,?,?,?,?,?)",
                     (new_id("sp"), common, scientific, code, color, utc_now()),
                 )
+                # Upgrade master rows created before common names were bundled.
+                # A locally edited common name is left untouched.
+                db.execute(
+                    """UPDATE species SET common_name=?,scientific_name=?
+                       WHERE code=?
+                       AND (TRIM(common_name)=TRIM(scientific_name) OR TRIM(common_name)='')""",
+                    (common, scientific, code),
+                )
 
     @staticmethod
     def _rows(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:

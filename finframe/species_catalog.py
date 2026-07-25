@@ -109,6 +109,113 @@ MASTER_SPECIES_NAMES = (
     "Ostorhinchus doederleini",
 )
 
+# English names primarily follow the CSIRO Codes for Australian Aquatic Biota
+# (CAAB) and Australian Fish Names Standard. FishBase is used where CAAB has no
+# vernacular name. Keys intentionally remain the workbook labels above,
+# including historical abbreviations and misspellings, so existing annotations
+# and generated species codes remain compatible.
+MASTER_SPECIES_COMMON_NAMES = {
+    "Parma polylepis": "Banded Scalyfin",
+    "Pseudolabrus luculentus": "Luculent Wrasse",
+    "Neo. polyacanthus": "Multispine Damsel",
+    "Plectro. gascoynei": "Coral Sea Gregory",
+    "Ostorhinchus norfolcensis": "Norfolk Cardinalfish",
+    "Pseudocheilinus hexataenia": "Sixline Wrasse",
+    "Chlorurus spilurus": "Pacific Bullethead Parrotfish",
+    "Thal. purpureum": "Surge Wrasse",
+    "Thal. lunare": "Moon Wrasse",
+    "Thal. amblycephalum": "Bluehead Wrasse",
+    "Thal. lutescens": "Green Moon Wrasse",
+    "Thal. hardwicke": "Sixbar Wrasse",
+    "Thal. jansenii": "Jansen's Wrasse",
+    "Gomphosus varius": "Birdnose Wrasse",
+    "Anampses elegans": "Elegant Wrasse",
+    "Hal. marginatus": "Dusky Wrasse",
+    "Hal. margaritifer": "Pearly Wrasse",
+    "Hal. trimaculatus": "Threespot Wrasse",
+    "Hal. nebulosus": "Cloud Wrasse",
+    "Notolabrus inscriptus": "Inscribed Wrasse",
+    "Cheilio inermis": "Sharpnose Wrasse",
+    "Stethojulis bandanensis": "Redspot Wrasse",
+    "Coris sandeyeri": "Eastern King Wrasse",
+    "Coris bulbifrons": "Doubleheader",
+    "Plagiotremus tapenisoma": "Piano Fangblenny",
+    "Chaet. vagabundus": "Vagabond Butterflyfish",
+    "Chaet. auriga": "Threadfin Butterflyfish",
+    "Chaet. plebeius": "Bluespot Butterflyfish",
+    "Chaet. melannotus": "Blackback Butterflyfish",
+    "Chaet. trifascialis": "Chevron Butterflyfish",
+    "Chaet. pelewensis": "Dot-and-dash Butterflyfish",
+    "Chaet. speculum": "Ovalspot Butterflyfish",
+    "Chaet. lineolatus": "Lined Butterflyfish",
+    "Chaet. lunula": "Racoon Butterflyfish",
+    "Chaet. flavirostris": "Dusky Butterflyfish",
+    "Chaet. tricinctus": "Threeband Butterflyfish",
+    "Chaet. lunulatus": "Pinstripe Butterflyfish",
+    "Chaet. citrinellus": "Citron Butterflyfish",
+    "Chaet. mertensii": "Mertens' Butterflyfish",
+    "Chaet. bennettii": "Eclipse Butterflyfish",
+    "Heniochus chrysostomus": "Pennant Bannerfish",
+    "Heniochus monoceros": "Masked Bannerfish",
+    "Trachinotus blochii": "Snubnose Dart",
+    "Plectro. fasciolatus": "Pacific Gregory",
+    "Pseudocaranx sp.": "Silver Trevally (unidentified)",
+    "Caranx sexfasciatus": "Bigeye Trevally",
+    "Abu. vaigiensis": "Indo-Pacific Sergeant",
+    "Abu. sexfasciatus": "Scissortail Sergeant",
+    "Abu. sordidus": "Blackspot Sergeant",
+    "Abu. septemfasciatus": "Banded Sergeant",
+    "Naso unicornis": "Bluespine Unicornfish",
+    "Acanthurus dussumeieri": "Pencil Surgeonfish",
+    "Zanclus cornutus": "Moorish Idol",
+    "Prionurus maculatus": "Spotted Sawtail",
+    "Parupeneus cyclostomus": "Goldsaddle Goatfish",
+    "Chromis norfolkensis": "Norfolk Chromis",
+    "Diodon hystrix": "Spotted Porcupinefish",
+    "Cirrpectes sp.": "Cirripectes Blenny (unidentified)",
+    "Trachypoma macacanthus": "Pacific Rockcod",
+    "Chromis margaritifer": "Whitetail Puller",
+    "Plectro. dickii": "Dick's Damsel",
+    "Plectro. johnstonianus": "Johnston Damsel",
+    "Fistularia commersonnii": "Smooth Flutemouth",
+    "Aplodactylus etheridgeii": "Notch-head Marblefish",
+    "Synodus dermatogenys": "Banded Lizardfish",
+    "Girella cyanea": "Blue Drummer",
+    "Crenimugil crenilabis": "Wartylip Mullet",
+    "Mulloidicchthys flavolineatus": "Yellowstripe Goatfish",
+    "Myxus elongatus": "Sand Mullet",
+    "Mugil cephalus": "Sea Mullet",
+    "Chrysiptera notialis": "Southern Demoiselle",
+    "Kyphosus vaigiensis": "Brassy Drummer",
+    "Epinephelus rivulatus": "Chinaman Rockcod",
+    "Bothus pantherinus": "Leopard Flounder",
+    "Pagrus auratus": "Snapper",
+    "Parupeneus ciliatus": "Diamondscale Goatfish",
+    "Parupeneus spilurus": "Blacksaddle Goatfish",
+    "Eviota hoesei": "Doug's Eviota",
+    "Leiuranus semicinctus": "Saddled Snake Eel",
+    "Gymnothorax eurostus": "Stout Moray",
+    "Taeniamia leai": "Lea's Cardinalfish",
+    "Sargocentron punctatissimum": "Speckled Squirrelfish",
+    "Microcanthus joyceae": "Stripey",
+    "Sphyraena acutipinnis": "Sharpfin Barracuda",
+    "Acanthistius cinctus": "Yellowbanded Wirrah",
+    "Gymnothorax annasona": "Lord Howe Moray",
+    "Sargocentron rubrum": "Red Squirrelfish",
+    "Labroides dimidiatus": "Common Cleanerfish",
+    "Gymnothorax nubilis": "Grey Moray",
+    "Cymolutes praetextatus": "Knife Wrasse",
+    "Pervagor alternans": "Yelloweye Leatherjacket",
+    "Epinephelus daemelli": "Black Rockcod",
+    "Cheilodactylus ephippium": "Painted Morwong",
+    "Pomacentrus pavo": "Peacock Damsel",
+    "Myliobatis tenuicaudatus": "Southern Eagle Ray",
+    "Goniistius francisi": "Blacktip Morwong",
+    "Seriola lalandi": "Yellowtail Kingfish",
+    "Bodianus axillaris": "Coral Pigfish",
+    "Ostorhinchus doederleini": "Fourline Cardinalfish",
+}
+
 SPECIES_COLORS = (
     "#e85d75",
     "#2a9d8f",
@@ -158,9 +265,18 @@ def _catalog_codes(names: tuple[str, ...]) -> list[str]:
 
 
 def master_species_records() -> tuple[tuple[str, str, str, str], ...]:
+    if set(MASTER_SPECIES_COMMON_NAMES) != set(MASTER_SPECIES_NAMES):
+        missing = set(MASTER_SPECIES_NAMES) - set(MASTER_SPECIES_COMMON_NAMES)
+        extra = set(MASTER_SPECIES_COMMON_NAMES) - set(MASTER_SPECIES_NAMES)
+        raise ValueError(f"Master common-name catalogue mismatch: missing={missing}, extra={extra}")
     codes = _catalog_codes(MASTER_SPECIES_NAMES)
     return tuple(
-        (name, name, code, SPECIES_COLORS[index % len(SPECIES_COLORS)])
+        (
+            MASTER_SPECIES_COMMON_NAMES[name],
+            name,
+            code,
+            SPECIES_COLORS[index % len(SPECIES_COLORS)],
+        )
         for index, (name, code) in enumerate(zip(MASTER_SPECIES_NAMES, codes, strict=True))
     )
 
