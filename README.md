@@ -10,12 +10,13 @@ The application is local-first. Video remains on the workstation, while projects
 2. Create a survey project and record deployment, site and observer metadata.
 3. Add one or more source videos, choose multiple still-image files, or import an image folder including its subfolders.
 4. Select a species and draw a box around every visible fish on an observation frame or image.
-5. Mark the frame complete only after every visible fish is boxed. Only complete frames contribute to final MaxN.
-6. For video, optionally choose 0.5× through 6× playback and press Play. Box propagation is off by default, keeping fast-forward-and-pause surveys manual and responsive.
-7. Optionally enable the experimental box-propagation checkbox for a continuous segment. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
-8. Correct proposals while watching, then use **Approve watched segment** after checking that no fish were missed.
-9. FinFrame updates a provisional Live MaxN from verified boxes immediately and calculates defensible Final MaxN from completed frames only.
-10. FinFrame selects complete, diverse keyframes for detector training; pending predictions can never train the model.
+5. Optionally enable **SAM-assisted click annotation** while paused. Click the fish, add positive clicks over missed fish pixels or Shift/right-click background that was included, then choose **Accept mask + box**. Use **Reset mask** or **Use manual box** whenever SAM is unhelpful.
+6. Mark the frame complete only after every visible fish is boxed. Only complete frames contribute to final MaxN.
+7. For video, optionally choose 0.5× through 6× playback and press Play. Box propagation is off by default, keeping fast-forward-and-pause surveys manual and responsive.
+8. Optionally enable the experimental box-propagation checkbox for a continuous segment. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.
+9. Correct proposals while watching, then use **Approve watched segment** after checking that no fish were missed.
+10. FinFrame updates a provisional Live MaxN from verified boxes immediately and calculates defensible Final MaxN from completed frames only.
+11. FinFrame selects complete, diverse keyframes for detector training; pending predictions can never train the model.
 
 All projects in the database contribute to training. Opening another image or video does not discard earlier annotations.
 
@@ -27,6 +28,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - First-class still-image annotation with multi-file and recursive folder import; Image arrows move through the imported photo set
 - Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
 - Bounding-box drawing, selection, movement and resizing, with annotation details saved automatically
+- Optional single-click SAM masks with positive/negative correction points, explicit acceptance and manual-box fallback
 - Opt-in experimental box-seeded propagation during continuous playback, with corrected boxes re-seeding the tracker
 - Shared 99-species taxonomy populated from `species_list.xlsx` → first `Master Sheet`, with search-as-you-type selection, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution
@@ -52,6 +54,8 @@ AI output is never treated as truth. A detector or tracker proposal is stored as
 - released observation data
 
 Approving an unchanged proposal records `ai_verified` or `tracker_verified`. Changing its class, geometry or metadata before approval records `ai_corrected` or `tracker_corrected`. Rejected proposals remain outside the dataset.
+
+SAM assistance has a separate, explicit review boundary. Its mask is only an on-screen preview while the student adds positive or negative correction points. Nothing enters the database until **Accept mask + box** is pressed. Acceptance records the reviewed mask plus its derived bounding box as `ai_verified`, or `ai_corrected` when the student used correction points; resetting it or returning to the manual box tool records nothing.
 
 Approval operates at two levels. Box approval means that one proposed label is correct. Frame completion means that the student has checked the whole image and boxed every visible fish. A frame cannot be completed while any proposal on it is pending. Editing a complete frame automatically makes it incomplete again so the changed observation must be reviewed.
 
@@ -88,6 +92,8 @@ python -m finframe
 
 The first training run uses `yolo11n.pt` by default. Ultralytics may download those base weights if they are not already present. Later runs warm-start from the active FinFrame detector.
 
+SAM assistance is disabled by default and runs outside the interface thread. With no configured weights, FinFrame uses MobileSAM and Ultralytics may download `mobile_sam.pt` on first use. To use SAM 3 instead, place `sam3.pt` in the FinFrame `models` directory or set `FINFRAME_SAM_MODEL` to a compatible local checkpoint. SAM 3 requires Ultralytics 8.3.237 or newer and its weights may require Hugging Face access; it is substantially more demanding than MobileSAM. An optional `FINFRAME_SAM_DEVICE` value such as `cuda:0`, `mps` or `cpu` selects the inference device.
+
 ## Data location
 
 By default, Windows data is stored under `%LOCALAPPDATA%\FinFrame`:
@@ -114,7 +120,7 @@ The bundled master taxonomy is added idempotently whenever a database opens. Exi
 
 ## Exports
 
-COCO and YOLO observation exports include only verified annotations on complete frames. Extracted frame images are optional. When images are omitted, `metadata/frame_manifest.csv` records the source path, frame number, timestamp, completion state, training selection and dimensions for later extraction.
+COCO and YOLO observation exports include only verified annotations on complete frames. Accepted SAM annotations retain their pixel masks in COCO segmentation fields and also export their derived boxes; YOLO detection exports use those boxes. Extracted frame images are optional. When images are omitted, `metadata/frame_manifest.csv` records the source path, frame number, timestamp, completion state, training selection and dimensions for later extraction.
 
 The **Export contribution** action serves a different purpose: it embeds annotated frames, selected negative keyframes and all verified, pending and rejected decisions needed to reproduce the student's review state. The receiving instructor can select multiple contribution files in one import operation.
 

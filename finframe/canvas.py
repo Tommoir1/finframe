@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+import numpy as np
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
+
+from .sam_assist import decode_mask_rle
 
 
 class AnnotationCanvas(QWidget):
     boxCreated = Signal(tuple)
     boxChanged = Signal(str, tuple)
     selectionChanged = Signal(object)
+    samPointCreated = Signal(tuple, int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -23,6 +27,10 @@ class AnnotationCanvas(QWidget):
         self._start = QPointF()
         self._current = QPointF()
         self._origin: tuple[float, float, float, float] | None = None
+        self._annotation_masks: dict[str, QImage] = {}
+        self._sam_enabled = False
+        self._sam_preview: QImage | None = None
+        self._sam_points: list[tuple[float, float, int]] = []
 
     def set_frame(self, image: QImage | None) -> None:
         self._image = image
@@ -30,8 +38,51 @@ class AnnotationCanvas(QWidget):
 
     def set_annotations(self, annotations: list[dict[str, Any]]) -> None:
         self._annotations = annotations
+        self._annotation_masks = {}
+        for annotation in annotations:
+            mask = decode_mask_rle(str(annotation.get("mask_rle") or ""))
+            if mask is not None:
+                color = QColor(annotation.get("color") or "#ff8465")
+                self._annotation_masks[annotation["id"]] = self._mask_image(mask, color, 58)
         if self._selected_id and not any(item["id"] == self._selected_id for item in annotations):
             self._selected_id = None
+        self.update()
+
+    @staticmethod
+    def _mask_image(mask: np.ndarray, color: QColor, alpha: int) -> QImage:
+        binary = np.asarray(mask, dtype=bool)
+        height, width = binary.shape
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[binary, 0] = color.red()
+        rgba[binary, 1] = color.green()
+        rgba[binary, 2] = color.blue()
+        rgba[binary, 3] = alpha
+        return QImage(
+            rgba.data,
+            width,
+            height,
+            int(rgba.strides[0]),
+            QImage.Format.Format_RGBA8888,
+        ).copy()
+
+    def set_sam_mode(self, enabled: bool) -> None:
+        self._sam_enabled = enabled
+        self._action = None
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+        self.update()
+
+    def set_sam_preview(
+        self,
+        mask: np.ndarray | None,
+        points: list[tuple[float, float, int]],
+    ) -> None:
+        self._sam_preview = (
+            self._mask_image(mask, QColor("#22d3ee"), 92) if mask is not None else None
+        )
+        self._sam_points = list(points)
         self.update()
 
     def select_annotation(self, annotation_id: str | None) -> None:
@@ -79,9 +130,15 @@ class AnnotationCanvas(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Open a project and video to begin")
             return
 
+        if self._sam_preview is not None:
+            painter.drawImage(target, self._sam_preview)
+
         for annotation in self._annotations:
             selected = annotation["id"] == self._selected_id
             color = QColor(annotation.get("color") or "#ff8465")
+            mask_image = self._annotation_masks.get(annotation["id"])
+            if mask_image is not None:
+                painter.drawImage(target, mask_image)
             pen = QPen(color, 3 if selected else 2)
             if annotation.get("status") == "pending":
                 pen.setStyle(Qt.PenStyle.DashLine)
@@ -119,6 +176,17 @@ class AnnotationCanvas(QWidget):
                 painter.setPen(QPen(color, 2))
                 painter.drawRect(QRectF(screen_box.right() - 5, screen_box.bottom() - 5, 10, 10))
 
+        for x, y, label in self._sam_points:
+            centre = QPointF(target.x() + x * target.width(), target.y() + y * target.height())
+            color = QColor("#25d366") if label else QColor("#ff4d5a")
+            painter.setBrush(color)
+            painter.setPen(QPen(QColor("white"), 2))
+            painter.drawEllipse(centre, 6, 6)
+            painter.setPen(QPen(QColor("#071310"), 2))
+            painter.drawLine(QLineF(centre.x() - 3, centre.y(), centre.x() + 3, centre.y()))
+            if label:
+                painter.drawLine(QLineF(centre.x(), centre.y() - 3, centre.x(), centre.y() + 3))
+
         if self._action == "draw":
             left, right = sorted((self._start.x(), self._current.x()))
             top, bottom = sorted((self._start.y(), self._current.y()))
@@ -126,10 +194,21 @@ class AnnotationCanvas(QWidget):
             painter.drawRect(self._screen_box((left, top, right - left, bottom - top)))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton or not self._image:
+        if not self._image:
             return
         point = self._normalised_point(event.position())
         if point is None:
+            return
+        if self._sam_enabled:
+            if event.button() not in {Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton}:
+                return
+            negative = (
+                event.button() == Qt.MouseButton.RightButton
+                or bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            )
+            self.samPointCreated.emit((point.x(), point.y()), 0 if negative else 1)
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
             return
         hit = self._hit(point)
         self._start = point

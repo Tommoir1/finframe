@@ -38,6 +38,8 @@ SQLite and project backups store `x`, `y`, `width` and `height` between zero and
 
 COCO exports convert these to pixel `[x, y, width, height]`. YOLO exports use normalised `class centre_x centre_y width height` lines.
 
+An annotation accepted from SAM can additionally contain `mask_rle`, an uncompressed COCO run-length encoding in source-frame pixel coordinates. Its bounding box remains required so the same reviewed annotation can support MaxN, tracking and object-detection training. Manual geometry edits clear an existing mask rather than silently retaining segmentation pixels that no longer match the box.
+
 ## Dataset archives
 
 COCO:
@@ -62,7 +64,7 @@ metadata/verified_annotations.json
 README.txt
 ```
 
-The frame manifest always records the source media path, project, deployment, frame number, timestamp and dimensions. Label-only archives therefore remain extractable later when the original images or videos are available.
+The frame manifest always records the source media path, project, deployment, frame number, timestamp and dimensions. Label-only archives therefore remain extractable later when the original images or videos are available. COCO exports preserve accepted `mask_rle` data in each annotation's `segmentation` field and calculate its area from the mask. YOLO detection exports use the annotation's derived box because that format has no mask field.
 
 ## Student contribution bundles
 

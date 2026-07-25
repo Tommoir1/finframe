@@ -4,6 +4,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
+import numpy as np
+
 from finframe.database import Database
 from finframe.dataset import (
     DatasetError,
@@ -12,6 +14,7 @@ from finframe.dataset import (
     export_dataset,
     import_contribution_bundle,
 )
+from finframe.sam_assist import encode_mask_rle
 
 
 class DatasetExportTests(unittest.TestCase):
@@ -57,6 +60,34 @@ class DatasetExportTests(unittest.TestCase):
         with zipfile.ZipFile(destination) as archive:
             label_name = next(name for name in archive.namelist() if name.startswith("labels/"))
             self.assertEqual(archive.read(label_name).decode(), "0 0.300000 0.300000 0.400000 0.200000")
+
+    def test_coco_export_preserves_an_approved_sam_mask(self):
+        mask = np.zeros((50, 100), dtype=np.uint8)
+        mask[10:30, 10:40] = 1
+        self.db.add_annotation(
+            video_id=self.video["id"],
+            frame_number=14,
+            time_seconds=.56,
+            species_id=self.species["id"],
+            track_id="SAM-001",
+            box=(.1, .2, .3, .4),
+            mask_rle=encode_mask_rle(mask),
+            status="verified",
+            source="ai_verified",
+        )
+        self.db.set_frame_reviewed(self.video["id"], 14, True)
+
+        destination = export_dataset(
+            self.db,
+            self.root / "segmentation.zip",
+            fmt="coco",
+            include_images=False,
+        )
+        with zipfile.ZipFile(destination) as archive:
+            annotation = json.loads(archive.read("annotations/instances.json"))["annotations"][0]
+            self.assertEqual(annotation["segmentation"]["size"], [50, 100])
+            self.assertEqual(annotation["area"], 600)
+            self.assertEqual(annotation["bbox"], [10.0, 10.0, 30.0, 20.0])
 
     def test_training_builder_aggregates_verified_frames_across_videos(self):
         try:

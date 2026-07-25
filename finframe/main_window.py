@@ -58,6 +58,7 @@ from .dataset import (
     import_contribution_bundle,
 )
 from .inference import InferenceEngine, InferenceError
+from .sam_assist import SamAssistEngine, SamMaskResult
 from .seed_tracking import SeedTrackingSession, SeedTrackingUnavailable
 from .training import TrainingCoordinator
 
@@ -389,6 +390,33 @@ class PlaybackWorker(QThread):
             capture.release()
 
 
+class SamMaskWorker(QThread):
+    completed = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(
+        self,
+        engine: SamAssistEngine,
+        image: Any,
+        points: list[tuple[float, float]],
+        labels: list[int],
+        revision: int,
+    ):
+        super().__init__()
+        self.engine = engine
+        self.image = image.copy()
+        self.points = list(points)
+        self.labels = list(labels)
+        self.revision = revision
+
+    def run(self) -> None:
+        try:
+            result = self.engine.segment(self.image, self.points, self.labels)
+            self.completed.emit(self.revision, result)
+        except Exception as exc:
+            self.failed.emit(self.revision, str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database, data_dir: Path, *, show_startup_prompt: bool = True):
         super().__init__()
@@ -411,6 +439,14 @@ class MainWindow(QMainWindow):
         self.review_segment_start: int | None = None
         self.tracking_worker: TrackingWorker | None = None
         self.playback_worker: PlaybackWorker | None = None
+        self.sam_engine = SamAssistEngine(data_dir)
+        self.sam_capability = self.sam_engine.capability()
+        self.sam_worker: SamMaskWorker | None = None
+        self.sam_points: list[tuple[float, float, int]] = []
+        self.sam_result: SamMaskResult | None = None
+        self.sam_revision = 0
+        self._sam_rerun_requested = False
+        self.sam_context: tuple[str, int] | None = None
         self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
         self.resize(1480, 920)
@@ -503,6 +539,7 @@ class MainWindow(QMainWindow):
         self.canvas.boxCreated.connect(self.create_manual_box)
         self.canvas.boxChanged.connect(self.canvas_box_changed)
         self.canvas.selectionChanged.connect(self.select_annotation_by_id)
+        self.canvas.samPointCreated.connect(self.sam_point_added)
         video_layout.addWidget(self.canvas, 1)
         self.timeline_row = QWidget()
         timeline_layout = QHBoxLayout(self.timeline_row)
@@ -550,6 +587,36 @@ class MainWindow(QMainWindow):
         seed_controls.addWidget(self.seed_tracking_status)
         seed_controls.addStretch(1)
         video_layout.addLayout(seed_controls)
+        sam_controls = QHBoxLayout()
+        self.sam_checkbox = QCheckBox("Enable SAM-assisted click annotation")
+        self.sam_checkbox.setObjectName("samAssistCheckbox")
+        self.sam_checkbox.setChecked(False)
+        self.sam_checkbox.setToolTip(
+            "Off by default. Click a fish to add a positive point; Shift-click or "
+            "right-click unwanted regions to add negative correction points."
+        )
+        self.sam_checkbox.toggled.connect(self.sam_assist_toggled)
+        self.sam_undo_button = QPushButton("Undo point")
+        self.sam_undo_button.clicked.connect(self.undo_sam_point)
+        self.sam_reset_button = QPushButton("Reset mask")
+        self.sam_reset_button.clicked.connect(self.reset_sam_preview)
+        self.sam_manual_button = QPushButton("Use manual box")
+        self.sam_manual_button.clicked.connect(self.use_manual_box_mode)
+        self.sam_accept_button = QPushButton("Accept mask + box")
+        self.sam_accept_button.setObjectName("samAcceptButton")
+        self.sam_accept_button.clicked.connect(self.accept_sam_mask)
+        for widget in (
+            self.sam_checkbox,
+            self.sam_undo_button,
+            self.sam_reset_button,
+            self.sam_manual_button,
+            self.sam_accept_button,
+        ):
+            sam_controls.addWidget(widget)
+        video_layout.addLayout(sam_controls)
+        self.sam_status = QLabel(self.sam_capability.message)
+        self.sam_status.setWordWrap(True)
+        video_layout.addWidget(self.sam_status)
         ai_controls = QHBoxLayout()
         self.ai_frame_button = QPushButton("AI suggest current frame")
         self.ai_frame_button.clicked.connect(self.suggest_current_frame)
@@ -747,6 +814,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.stop_playback(refresh=False)
+        if self.sam_worker and self.sam_worker.isRunning():
+            self.sam_worker.wait()
         if hasattr(self, "training_timer"):
             self.training_timer.stop()
         if self.capture:
@@ -1066,6 +1135,13 @@ class MainWindow(QMainWindow):
             control.setEnabled(playable and (control is self.play_button or not playing))
         self.playback_speed.setEnabled(playable)
         self.seed_tracking_checkbox.setEnabled(playable and not playing)
+        sam_available = bool(
+            self.sam_capability.available
+            and self.current_video
+            and self.current_image is not None
+            and not playing
+        )
+        self.sam_checkbox.setEnabled(sam_available)
         self.approve_segment_button.setEnabled(playable and not playing)
         self.clear_video_boxes_button.setEnabled(
             bool(self.current_video and self.current_video.get("media_type") == "video") and not playing
@@ -1076,6 +1152,7 @@ class MainWindow(QMainWindow):
         self.following_button.setEnabled(playable or (is_image and self._adjacent_image_index(1) is not None))
         self.canvas.setEnabled(not playing)
         self.annotation_panel.setEnabled(not playing)
+        self._refresh_sam_controls()
 
     def _adjacent_image_index(self, direction: int) -> int | None:
         index = self.video_combo.currentIndex() + (1 if direction > 0 else -1)
@@ -1142,6 +1219,13 @@ class MainWindow(QMainWindow):
         self._display_frame(frame_number, image, refresh_maxn=True)
 
     def _display_frame(self, frame_number: int, image: Any, *, refresh_maxn: bool) -> None:
+        context = (
+            (str(self.current_video["id"]), int(frame_number))
+            if self.current_video
+            else None
+        )
+        if self.sam_context is not None and self.sam_context != context:
+            self.reset_sam_preview()
         self.current_frame = frame_number
         self.current_image = image
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -1162,6 +1246,8 @@ class MainWindow(QMainWindow):
             return
         if not self._persist_selected_annotation():
             return
+        if self.sam_checkbox.isChecked():
+            self.use_manual_box_mode()
         if self.current_frame >= int(self.current_video["frame_count"]) - 1:
             self.seek_frame(0)
         if self.review_segment_start is None:
@@ -1223,6 +1309,196 @@ class MainWindow(QMainWindow):
         if self.playback_worker and self.playback_worker.isRunning():
             self.playback_worker.set_speed(speed)
         self.statusBar().showMessage(f"Playback speed set to {speed:g}×", 3000)
+
+    def _refresh_sam_controls(self) -> None:
+        if not hasattr(self, "sam_checkbox"):
+            return
+        active = bool(
+            self.sam_checkbox.isChecked()
+            and self.sam_capability.available
+            and self.current_image is not None
+        )
+        has_points = bool(self.sam_points)
+        self.sam_undo_button.setEnabled(active and has_points)
+        self.sam_reset_button.setEnabled(active and has_points)
+        self.sam_manual_button.setEnabled(active)
+        self.sam_accept_button.setEnabled(active and self.sam_result is not None)
+
+    def sam_assist_toggled(self, enabled: bool) -> None:
+        if enabled and not self.sam_capability.available:
+            with QSignalBlocker(self.sam_checkbox):
+                self.sam_checkbox.setChecked(False)
+            self.sam_status.setText(self.sam_capability.message)
+            self.canvas.set_sam_mode(False)
+            self._refresh_sam_controls()
+            return
+        if enabled:
+            self.stop_playback(refresh=False)
+            self.canvas.set_sam_mode(True)
+            self.sam_status.setText(
+                f"{self.sam_capability.model_name}: click the fish; "
+                "Shift-click or right-click regions that should be excluded"
+            )
+        else:
+            self.reset_sam_preview()
+            self.canvas.set_sam_mode(False)
+            self.sam_status.setText(self.sam_capability.message)
+        self._refresh_sam_controls()
+
+    def sam_point_added(self, point: tuple[float, float], label: int) -> None:
+        if not self.sam_checkbox.isChecked() or self.current_image is None or not self.current_video:
+            return
+        if not self.selected_species_id():
+            QMessageBox.information(
+                self,
+                "Select a species",
+                "Select the fish species on the left before using SAM.",
+            )
+            return
+        self.sam_context = (str(self.current_video["id"]), int(self.current_frame))
+        self.sam_points.append((float(point[0]), float(point[1]), int(bool(label))))
+        self.sam_result = None
+        self.sam_revision += 1
+        self.canvas.set_sam_preview(None, self.sam_points)
+        self._refresh_sam_controls()
+        if not any(item[2] for item in self.sam_points):
+            self.sam_status.setText("Add a normal positive click on the fish first")
+            return
+        self._request_sam_mask()
+
+    def undo_sam_point(self, *_args: Any) -> None:
+        if not self.sam_points:
+            return
+        self.sam_points.pop()
+        self.sam_result = None
+        self.sam_revision += 1
+        self.canvas.set_sam_preview(None, self.sam_points)
+        self._refresh_sam_controls()
+        if any(item[2] for item in self.sam_points):
+            self._request_sam_mask()
+        else:
+            self.sam_status.setText("Click the fish to create a new mask")
+
+    def reset_sam_preview(self, *_args: Any) -> None:
+        self.sam_points = []
+        self.sam_result = None
+        self.sam_context = None
+        self.sam_revision += 1
+        self._sam_rerun_requested = False
+        if hasattr(self, "canvas"):
+            self.canvas.set_sam_preview(None, [])
+        if hasattr(self, "sam_status") and self.sam_checkbox.isChecked():
+            self.sam_status.setText("Click the fish to create a new mask")
+        self._refresh_sam_controls()
+
+    def use_manual_box_mode(self, *_args: Any) -> None:
+        if self.sam_checkbox.isChecked():
+            self.sam_checkbox.setChecked(False)
+        else:
+            self.reset_sam_preview()
+            self.canvas.set_sam_mode(False)
+        self.sam_status.setText("Manual bounding-box mode")
+
+    def _request_sam_mask(self) -> None:
+        if self.sam_worker and self.sam_worker.isRunning():
+            self._sam_rerun_requested = True
+            self.sam_status.setText("SAM correction queued…")
+            return
+        if self.current_image is None or not any(item[2] for item in self.sam_points):
+            return
+        revision = self.sam_revision
+        worker = SamMaskWorker(
+            self.sam_engine,
+            self.current_image,
+            [(x, y) for x, y, _label in self.sam_points],
+            [label for _x, _y, label in self.sam_points],
+            revision,
+        )
+        worker.completed.connect(self.sam_mask_ready)
+        worker.failed.connect(self.sam_mask_failed)
+        worker.finished.connect(self.sam_worker_finished)
+        self.sam_worker = worker
+        self._sam_rerun_requested = False
+        self.sam_status.setText(
+            f"{self.sam_capability.model_name} is outlining the fish in the background…"
+        )
+        worker.start()
+
+    def sam_mask_ready(self, revision: int, result: SamMaskResult) -> None:
+        if revision != self.sam_revision or not self.sam_checkbox.isChecked():
+            return
+        self.sam_result = result
+        self.canvas.set_sam_preview(result.mask, self.sam_points)
+        self.sam_status.setText(
+            "Review the cyan mask. Add clicks to include missed areas, "
+            "Shift/right-click to exclude errors, then accept."
+        )
+        self._refresh_sam_controls()
+
+    def sam_mask_failed(self, revision: int, message: str) -> None:
+        if revision != self.sam_revision:
+            return
+        self.sam_result = None
+        self.sam_status.setText(f"SAM could not create this mask: {message}")
+        self.statusBar().showMessage(
+            "SAM failed for this fish; add another point or use a manual box",
+            8000,
+        )
+        self._refresh_sam_controls()
+
+    def sam_worker_finished(self) -> None:
+        worker = self.sender()
+        if worker is not self.sam_worker:
+            return
+        self.sam_worker = None
+        worker.deleteLater()
+        if (
+            self._sam_rerun_requested
+            and self.sam_checkbox.isChecked()
+            and any(item[2] for item in self.sam_points)
+        ):
+            self._request_sam_mask()
+
+    def accept_sam_mask(self, *_args: Any) -> None:
+        if (
+            self.sam_result is None
+            or self.current_video is None
+            or self.current_image is None
+            or not self._persist_selected_annotation()
+        ):
+            return
+        species_id = self.selected_species_id()
+        if not species_id:
+            QMessageBox.information(self, "Select a species", "Select the fish species first.")
+            return
+        result = self.sam_result
+        source = "ai_corrected" if len(self.sam_points) > 1 else "ai_verified"
+        try:
+            annotation = self.db.add_annotation(
+                video_id=self.current_video["id"],
+                frame_number=self.current_frame,
+                time_seconds=self.current_frame / max(0.001, self._fps()),
+                species_id=species_id,
+                track_id=self.db.next_track_id(self.current_video["id"], species_id),
+                box=result.box,
+                mask_rle=result.mask_rle,
+                status="verified",
+                source=source,
+                confidence=result.confidence,
+                created_by=self.current_project.get("observer", "") if self.current_project else "",
+                life_stage="Adult",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not save SAM annotation", str(exc))
+            return
+        self.reset_sam_preview()
+        self.selected_annotation_id = annotation["id"]
+        self.refresh_frame_annotations()
+        self._seed_annotation(annotation)
+        self.training.maybe_schedule("verified SAM annotation threshold")
+        self.sam_status.setText(
+            f"Saved {annotation['common_name']} mask and box. Click the next fish."
+        )
 
     def seed_tracking_toggled(self, enabled: bool) -> None:
         if not enabled:

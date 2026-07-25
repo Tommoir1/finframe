@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import Database, new_id, utc_now
+from .sam_assist import mask_area_from_rle
 
 
 class DatasetError(RuntimeError):
@@ -143,12 +144,20 @@ def export_dataset(db: Database, destination: str | Path, *, fmt: str, include_i
             for index, annotation in enumerate(annotations, start=1):
                 width, height = annotation["video_width"], annotation["video_height"]
                 bbox = [annotation["x"] * width, annotation["y"] * height, annotation["width"] * width, annotation["height"] * height]
+                segmentation: dict[str, Any] | list[Any] = []
+                if annotation.get("mask_rle"):
+                    try:
+                        segmentation = json.loads(annotation["mask_rle"])
+                    except (TypeError, json.JSONDecodeError):
+                        segmentation = []
+                mask_area = mask_area_from_rle(str(annotation.get("mask_rle") or ""))
                 coco_annotations.append({
                     "id": index,
                     "image_id": frame_index[(annotation["video_id"], annotation["frame_number"])],
                     "category_id": category_index[annotation["species_id"]] + 1,
                     "bbox": [round(value, 2) for value in bbox],
-                    "area": round(bbox[2] * bbox[3], 2),
+                    "segmentation": segmentation,
+                    "area": mask_area or round(bbox[2] * bbox[3], 2),
                     "iscrowd": 0,
                     "track_id": annotation["track_id"],
                     "attributes": {

@@ -2,7 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from finframe.database import Database
+from finframe.sam_assist import encode_mask_rle
 
 
 class DatabaseWorkflowTests(unittest.TestCase):
@@ -120,6 +123,26 @@ class DatabaseWorkflowTests(unittest.TestCase):
         third = self.db.training_stats()["verified_revision"]
         self.assertGreater(second, first)
         self.assertGreater(third, second)
+
+    def test_manual_box_edit_discards_a_stale_sam_mask(self):
+        mask = np.zeros((20, 40), dtype=np.uint8)
+        mask[4:12, 8:24] = 1
+        annotation = self.db.add_annotation(
+            video_id=self.video["id"],
+            frame_number=10,
+            time_seconds=.4,
+            species_id=self.species[0]["id"],
+            track_id="SAM-001",
+            box=(.2, .2, .4, .4),
+            mask_rle=encode_mask_rle(mask),
+            status="verified",
+            source="ai_verified",
+        )
+        self.assertTrue(annotation["mask_rle"])
+
+        updated = self.db.update_annotation(annotation["id"], width=.45)
+
+        self.assertEqual(updated["mask_rle"], "")
 
     def test_clear_video_annotations_is_scoped_and_invalidates_affected_frames(self):
         verified = self.add(0, 10)

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from finframe.database import Database
 from finframe.main_window import MainWindow, PlaybackWorker, SpeciesDialog, suggested_species_code
+from finframe.sam_assist import SamCapability, SamMaskResult, box_from_mask, encode_mask_rle
 from finframe.seed_tracking import SeedTrackingSession
 
 
@@ -25,6 +26,22 @@ class StableTracker:
 
     def update(self, _image):
         return True, self.box
+
+
+class FakeSamEngine:
+    def __init__(self):
+        self.calls = []
+
+    def segment(self, image, points, labels):
+        self.calls.append((list(points), list(labels)))
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[8:24, 10:30] = 1
+        return SamMaskResult(
+            mask=mask.astype(bool),
+            box=box_from_mask(mask),
+            mask_rle=encode_mask_rle(mask),
+            confidence=.91,
+        )
 
 
 class DesktopMediaTests(unittest.TestCase):
@@ -178,6 +195,65 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertEqual(updated["scientific_name"], "Chromis correctii")
             self.assertEqual(updated["code"], "USR-CHROMIS-EXAMPLEII")
             self.assertIn("Corrected Chromis", window.species_list.currentItem().text())
+            window.close()
+
+    def test_sam_mode_is_opt_in_correctable_and_saves_mask_with_box(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "sam-fish.jpg"
+            cv2.imwrite(str(image_path), np.full((32, 48, 3), 80, dtype=np.uint8))
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("SAM survey")
+            media = db.add_video(
+                project["id"],
+                image_path,
+                duration=0,
+                width=48,
+                height=32,
+                fps=1,
+                frame_count=1,
+                media_type="image",
+            )
+            db.ensure_frame(media["id"], 0, 0)
+            db.update_frame(media["id"], 0, image_path=image_path)
+            window = MainWindow(db, root, show_startup_prompt=False)
+            fake_sam = FakeSamEngine()
+            window.sam_engine = fake_sam
+            window.sam_capability = SamCapability(True, "TestSAM", "ready")
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(window.video_combo.findData(media["id"]))
+            self.app.processEvents()
+
+            self.assertFalse(window.sam_checkbox.isChecked())
+            window.sam_checkbox.setChecked(True)
+            window.sam_point_added((.4, .5), 1)
+            for _ in range(100):
+                self.app.processEvents()
+                if window.sam_result is not None:
+                    break
+                QTest.qWait(10)
+            self.assertIsNotNone(window.sam_result)
+            self.assertTrue(window.sam_accept_button.isEnabled())
+
+            window.sam_point_added((.1, .1), 0)
+            for _ in range(100):
+                self.app.processEvents()
+                if len(fake_sam.calls) >= 2 and window.sam_result is not None:
+                    break
+                QTest.qWait(10)
+            self.assertEqual(fake_sam.calls[-1][1], [1, 0])
+
+            window.accept_sam_mask()
+            annotations = db.annotations_for_frame(media["id"], 0)
+            self.assertEqual(len(annotations), 1)
+            self.assertEqual(annotations[0]["source"], "ai_corrected")
+            self.assertEqual(annotations[0]["status"], "verified")
+            self.assertTrue(annotations[0]["mask_rle"])
+            self.assertEqual(window.sam_points, [])
+            self.assertTrue(window.sam_checkbox.isChecked())
+
+            window.use_manual_box_mode()
+            self.assertFalse(window.sam_checkbox.isChecked())
             window.close()
 
     def test_left_species_does_not_silently_relabel_a_selected_box(self):

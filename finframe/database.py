@@ -120,6 +120,7 @@ class Database:
                     y REAL NOT NULL CHECK(y >= 0 AND y <= 1),
                     width REAL NOT NULL CHECK(width > 0 AND width <= 1),
                     height REAL NOT NULL CHECK(height > 0 AND height <= 1),
+                    mask_rle TEXT NOT NULL DEFAULT '',
                     life_stage TEXT NOT NULL DEFAULT 'Unknown',
                     activity TEXT NOT NULL DEFAULT 'Passing',
                     uncertain INTEGER NOT NULL DEFAULT 0,
@@ -168,6 +169,9 @@ class Database:
                 db.execute("ALTER TABLE frames ADD COLUMN training_selected INTEGER NOT NULL DEFAULT 0")
             if "training_reason" not in frame_columns:
                 db.execute("ALTER TABLE frames ADD COLUMN training_reason TEXT NOT NULL DEFAULT ''")
+            annotation_columns = {row[1] for row in db.execute("PRAGMA table_info(annotations)")}
+            if "mask_rle" not in annotation_columns:
+                db.execute("ALTER TABLE annotations ADD COLUMN mask_rle TEXT NOT NULL DEFAULT ''")
             if training_selection_added:
                 db.execute(
                     """UPDATE frames SET reviewed=1,updated_at=?
@@ -451,6 +455,7 @@ class Database:
         species_id: str,
         track_id: str,
         box: tuple[float, float, float, float],
+        mask_rle: str = "",
         status: str = "verified",
         source: str = "manual",
         confidence: float | None = None,
@@ -471,11 +476,11 @@ class Database:
             self._invalidate_frame_review(db, frame["id"])
             db.execute(
                 """INSERT INTO annotations(
-                       id,frame_id,species_id,track_id,x,y,width,height,life_stage,activity,uncertain,status,source,
+                       id,frame_id,species_id,track_id,x,y,width,height,mask_rle,life_stage,activity,uncertain,status,source,
                        confidence,model_id,created_by,modified,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    annotation_id, frame["id"], species_id, track_id, x, y, width, height, life_stage, activity,
+                    annotation_id, frame["id"], species_id, track_id, x, y, width, height, mask_rle, life_stage, activity,
                     int(uncertain), status, source, confidence, model_id, created_by, 0, now, now,
                 ),
             )
@@ -550,7 +555,18 @@ class Database:
         return dict(row)
 
     def update_annotation(self, annotation_id: str, **changes: Any) -> dict[str, Any]:
-        mapping = {"species_id", "track_id", "x", "y", "width", "height", "life_stage", "activity", "uncertain"}
+        mapping = {
+            "species_id",
+            "track_id",
+            "x",
+            "y",
+            "width",
+            "height",
+            "mask_rle",
+            "life_stage",
+            "activity",
+            "uncertain",
+        }
         current = self.get_annotation(annotation_id)
         values = {}
         for key, value in changes.items():
@@ -559,6 +575,13 @@ class Database:
             comparable = int(bool(value)) if key == "uncertain" else value
             if current[key] != comparable:
                 values[key] = comparable
+        if (
+            any(key in values for key in {"x", "y", "width", "height"})
+            and "mask_rle" not in changes
+            and current.get("mask_rle")
+        ):
+            # A manually changed box no longer has an exact corresponding mask.
+            values["mask_rle"] = ""
         if not values:
             return current
         values["modified"] = 1
@@ -1090,6 +1113,7 @@ class Database:
                         species_id=target_species_id,
                         track_id=source_annotation.get("track_id", "UNKNOWN-001"),
                         box=(float(source_annotation["x"]), float(source_annotation["y"]), float(source_annotation["width"]), float(source_annotation["height"])),
+                        mask_rle=source_annotation.get("mask_rle", ""),
                         status=source_annotation.get("status", "verified"),
                         source=source_annotation.get("source", "manual"),
                         confidence=source_annotation.get("confidence"),
