@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEventLoop, QTimer, Qt
+from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
@@ -114,6 +114,11 @@ class DesktopMediaTests(unittest.TestCase):
                     species_id=species["id"], track_id=f"{species['code']}-001",
                     box=(.1, .1, .2, .2), status="verified", source="manual",
                 )
+            db.add_annotation(
+                video_id=media[0]["id"], frame_number=0, time_seconds=0,
+                species_id=species["id"], track_id=f"{species['code']}-002",
+                box=(.15, .15, .2, .2), status="verified", source="manual",
+            )
 
             window = MainWindow(db, root, show_startup_prompt=False)
             window.refresh_projects(project["id"])
@@ -141,6 +146,28 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertLess(
                 window.canvas.geometry().bottom(),
                 window.media_navigation_panel.geometry().top(),
+            )
+            rendered = window.canvas._image_rect()
+            QTest.mouseMove(
+                window.canvas,
+                QPoint(
+                    round(rendered.x() + rendered.width() * .8),
+                    round(rendered.y() + rendered.height() * .8),
+                ),
+            )
+            self.app.processEvents()
+            self.assertIsNone(window.canvas._hovered_id)
+            QTest.mouseMove(
+                window.canvas,
+                QPoint(
+                    round(rendered.x() + rendered.width() * .2),
+                    round(rendered.y() + rendered.height() * .2),
+                ),
+            )
+            self.app.processEvents()
+            self.assertEqual(
+                window.canvas._hovered_id,
+                window.canvas._annotations[-1]["id"],
             )
             with patch(
                 "finframe.main_window.QMessageBox.question",
@@ -547,6 +574,26 @@ class DesktopMediaTests(unittest.TestCase):
                 window.canvas.geometry().bottom(),
                 window.media_navigation_panel.geometry().top(),
             )
+            normal_canvas_size = window.canvas.size()
+            window.enlarge_media_button.click()
+            self.app.processEvents()
+            self.assertTrue(window.media_focus_mode)
+            self.assertTrue(window.project_toolbar.isHidden())
+            self.assertTrue(window.species_panel.isHidden())
+            self.assertTrue(window.annotation_panel.isHidden())
+            self.assertTrue(window.bottom_tabs.isHidden())
+            self.assertEqual(window.enlarge_media_button.text(), "Restore layout")
+            self.assertGreater(window.canvas.width(), normal_canvas_size.width())
+            self.assertGreater(window.canvas.height(), normal_canvas_size.height())
+
+            window.restore_media_layout()
+            self.app.processEvents()
+            self.assertFalse(window.media_focus_mode)
+            self.assertFalse(window.project_toolbar.isHidden())
+            self.assertFalse(window.species_panel.isHidden())
+            self.assertFalse(window.annotation_panel.isHidden())
+            self.assertFalse(window.bottom_tabs.isHidden())
+            self.assertEqual(window.enlarge_media_button.text(), "Enlarge player")
             with patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
                 window.clear_all_video_boxes()
 

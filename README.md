@@ -27,6 +27,7 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - Native PySide6 desktop interface; no browser or separate local web server
 - First-class still-image annotation with multi-file and recursive folder import; Image arrows move through the imported photo set
 - Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
+- Reversible enlarged-media mode that hides surrounding panels; use the button or F11 to enlarge and Esc to restore
 - Bounding-box drawing, selection, movement and resizing, with annotation details saved automatically
 - Optional single-click SAM masks with positive/negative correction points, explicit acceptance and manual-box fallback
 - Opt-in experimental box-seeded propagation during continuous playback, with corrected boxes re-seeding the tracker

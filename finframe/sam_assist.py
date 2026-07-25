@@ -184,10 +184,14 @@ class SamAssistEngine:
         with self._lock:
             model = self._load_model()
             try:
+                # The extra nesting explicitly groups every positive and
+                # negative click as refinement prompts for one fish. Without
+                # it, some SAM variants interpret the clicks as separate
+                # object prompts and the first returned mask appears unchanged.
                 results = model.predict(
                     source=image,
-                    points=pixel_points,
-                    labels=[int(label) for label in labels],
+                    points=[pixel_points],
+                    labels=[[int(label) for label in labels]],
                     **options,
                 )
             except Exception as exc:

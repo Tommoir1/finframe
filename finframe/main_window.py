@@ -448,6 +448,8 @@ class MainWindow(QMainWindow):
         self._sam_rerun_requested = False
         self.sam_context: tuple[str, int] | None = None
         self.sam_manual_override = False
+        self.media_focus_mode = False
+        self._normal_splitter_sizes: list[int] = []
         self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
         self.resize(1480, 920)
@@ -462,6 +464,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("Project")
+        self.project_toolbar = toolbar
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         project_label = QLabel("Project")
@@ -507,9 +510,11 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(10, 10, 10, 10)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter = splitter
         outer.addWidget(splitter, 1)
 
         species_panel = QGroupBox("Species taxonomy")
+        self.species_panel = species_panel
         species_layout = QVBoxLayout(species_panel)
         self.species_search = QLineEdit()
         self.species_search.setPlaceholderText("Search common, scientific or code")
@@ -534,6 +539,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(species_panel)
 
         video_panel = QWidget()
+        self.video_panel = video_panel
         video_layout = QVBoxLayout(video_panel)
         video_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas = AnnotationCanvas()
@@ -580,6 +586,12 @@ class MainWindow(QMainWindow):
         self.playback_speed.setCurrentIndex(self.playback_speed.findData(1))
         self.playback_speed.currentIndexChanged.connect(self.playback_speed_changed)
         controls.addWidget(self.playback_speed)
+        self.enlarge_media_button = QPushButton("Enlarge player")
+        self.enlarge_media_button.setToolTip(
+            "Temporarily hide the surrounding panels and enlarge the media workspace"
+        )
+        self.enlarge_media_button.clicked.connect(self.toggle_media_focus)
+        controls.addWidget(self.enlarge_media_button)
         controls.addStretch(1)
         self.frame_label = QLabel("No media")
         self.frame_label.setObjectName("mediaPositionLabel")
@@ -746,6 +758,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([230, 830, 420])
 
         tabs = QTabWidget()
+        self.bottom_tabs = tabs
         tabs.setMaximumHeight(245)
         maxn_tab = QWidget()
         maxn_layout = QVBoxLayout(maxn_tab)
@@ -801,6 +814,14 @@ class MainWindow(QMainWindow):
         delete_shortcut.setShortcut(QKeySequence.StandardKey.Delete)
         delete_shortcut.triggered.connect(self.delete_annotation)
         self.addAction(delete_shortcut)
+        focus_shortcut = QAction(self)
+        focus_shortcut.setShortcut(QKeySequence("F11"))
+        focus_shortcut.triggered.connect(self.toggle_media_focus)
+        self.addAction(focus_shortcut)
+        restore_shortcut = QAction(self)
+        restore_shortcut.setShortcut(QKeySequence("Esc"))
+        restore_shortcut.triggered.connect(self.restore_media_layout)
+        self.addAction(restore_shortcut)
 
     def _apply_style(self) -> None:
         self.setStyleSheet("""
@@ -1150,6 +1171,36 @@ class MainWindow(QMainWindow):
         )
         self.media_navigation_panel.setFixedWidth(rendered_width)
 
+    def toggle_media_focus(self, *_args: Any) -> None:
+        if not self.media_focus_mode and not self.current_video:
+            return
+        enabling = not self.media_focus_mode
+        if enabling:
+            self._normal_splitter_sizes = self.main_splitter.sizes()
+        self.media_focus_mode = enabling
+        self.project_toolbar.setVisible(not enabling)
+        self.species_panel.setVisible(not enabling)
+        self.annotation_panel.setVisible(not enabling)
+        self.bottom_tabs.setVisible(not enabling)
+        if not enabling and self._normal_splitter_sizes:
+            sizes = list(self._normal_splitter_sizes)
+            QTimer.singleShot(0, lambda: self.main_splitter.setSizes(sizes))
+        self._configure_media_controls()
+        QTimer.singleShot(
+            0,
+            lambda: self.align_media_navigation(self.canvas._image_rect()),
+        )
+        self.statusBar().showMessage(
+            "Media enlarged · press Esc or Restore layout to return"
+            if enabling
+            else "Normal workspace restored",
+            5000,
+        )
+
+    def restore_media_layout(self, *_args: Any) -> None:
+        if self.media_focus_mode:
+            self.toggle_media_focus()
+
     def _configure_media_controls(self) -> None:
         playable = bool(
             self.current_video
@@ -1185,6 +1236,12 @@ class MainWindow(QMainWindow):
             f"Permanently delete every bounding box from the selected {media_noun}"
         )
         self.clear_video_boxes_button.setEnabled(has_media and not playing)
+        self.enlarge_media_button.setEnabled(has_media)
+        self.enlarge_media_button.setText(
+            "Restore layout"
+            if self.media_focus_mode
+            else ("Enlarge image" if is_image else "Enlarge player")
+        )
         self.media_navigation_panel.setVisible(has_media)
         self.timeline_row.setVisible(has_media and not is_image)
         for video_only_control in (

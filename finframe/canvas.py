@@ -26,6 +26,7 @@ class AnnotationCanvas(QWidget):
         self._image: QImage | None = None
         self._annotations: list[dict[str, Any]] = []
         self._selected_id: str | None = None
+        self._hovered_id: str | None = None
         self._action: str | None = None
         self._start = QPointF()
         self._current = QPointF()
@@ -37,6 +38,7 @@ class AnnotationCanvas(QWidget):
 
     def set_frame(self, image: QImage | None) -> None:
         self._image = image
+        self._hovered_id = None
         self.imageRectChanged.emit(self._image_rect())
         self.update()
 
@@ -54,6 +56,8 @@ class AnnotationCanvas(QWidget):
                 self._annotation_masks[annotation["id"]] = self._mask_image(mask, color, 58)
         if self._selected_id and not any(item["id"] == self._selected_id for item in annotations):
             self._selected_id = None
+        if self._hovered_id and not any(item["id"] == self._hovered_id for item in annotations):
+            self._hovered_id = None
         self.update()
 
     @staticmethod
@@ -127,6 +131,14 @@ class AnnotationCanvas(QWidget):
                 return annotation
         return None
 
+    def _update_hover(self, position: QPointF) -> None:
+        point = self._normalised_point(position)
+        hit = self._hit(point) if point is not None else None
+        hovered_id = hit["id"] if hit else None
+        if hovered_id != self._hovered_id:
+            self._hovered_id = hovered_id
+            self.update()
+
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#071310"))
@@ -154,31 +166,30 @@ class AnnotationCanvas(QWidget):
             screen_box = self._screen_box(self._box(annotation))
             painter.fillRect(screen_box, QColor(color.red(), color.green(), color.blue(), 35 if selected else 14))
             painter.drawRect(screen_box)
-            label = f"{'AI? · ' if annotation.get('status') == 'pending' else ''}{annotation.get('code','')} · {annotation.get('track_id','')}"
-            label_font = painter.font()
-            label_font.setPixelSize(11 if selected else 9)
-            label_font.setBold(selected)
-            painter.setFont(label_font)
-            metrics = painter.fontMetrics()
-            label_height = 17 if selected else 13
-            horizontal_padding = 5 if selected else 3
-            label_rect = QRectF(
-                screen_box.x(),
-                max(target.y(), screen_box.y() - label_height - 1),
-                metrics.horizontalAdvance(label) + horizontal_padding * 2,
-                label_height,
-            )
-            label_background = QColor(color)
-            label_background.setAlpha(235 if selected else 105)
-            painter.fillRect(label_rect, label_background)
-            label_text = QColor("#06130f")
-            label_text.setAlpha(255 if selected else 205)
-            painter.setPen(label_text)
-            painter.drawText(
-                label_rect.adjusted(horizontal_padding, 0, -horizontal_padding, 0),
-                Qt.AlignmentFlag.AlignVCenter,
-                label,
-            )
+            if annotation["id"] == self._hovered_id:
+                label = f"{'AI? · ' if annotation.get('status') == 'pending' else ''}{annotation.get('code','')} · {annotation.get('track_id','')}"
+                label_font = painter.font()
+                label_font.setPixelSize(11 if selected else 9)
+                label_font.setBold(selected)
+                painter.setFont(label_font)
+                metrics = painter.fontMetrics()
+                label_height = 17 if selected else 13
+                horizontal_padding = 5 if selected else 3
+                label_rect = QRectF(
+                    screen_box.x(),
+                    max(target.y(), screen_box.y() - label_height - 1),
+                    metrics.horizontalAdvance(label) + horizontal_padding * 2,
+                    label_height,
+                )
+                label_background = QColor(color)
+                label_background.setAlpha(235 if selected else 155)
+                painter.fillRect(label_rect, label_background)
+                painter.setPen(QColor("#06130f"))
+                painter.drawText(
+                    label_rect.adjusted(horizontal_padding, 0, -horizontal_padding, 0),
+                    Qt.AlignmentFlag.AlignVCenter,
+                    label,
+                )
             if selected:
                 painter.setBrush(QColor("white"))
                 painter.setPen(QPen(color, 2))
@@ -219,6 +230,7 @@ class AnnotationCanvas(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         hit = self._hit(point)
+        self._hovered_id = hit["id"] if hit else None
         self._start = point
         self._current = point
         if hit:
@@ -237,6 +249,7 @@ class AnnotationCanvas(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if not self._action:
+            self._update_hover(event.position())
             return
         point = self._normalised_point(event.position())
         if point is None:
@@ -255,6 +268,11 @@ class AnnotationCanvas(QWidget):
                     annotation["height"] = max(0.005, min(1.0 - y, height + dy))
         self.update()
 
+    def leaveEvent(self, event: Any) -> None:
+        self._hovered_id = None
+        self.update()
+        super().leaveEvent(event)
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton or not self._action:
             return
@@ -269,4 +287,5 @@ class AnnotationCanvas(QWidget):
             annotation = next((item for item in self._annotations if item["id"] == self._selected_id), None)
             if annotation:
                 self.boxChanged.emit(self._selected_id, self._box(annotation))
+        self._update_hover(event.position())
         self.update()
