@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from finframe.database import Database
@@ -111,6 +111,52 @@ class DesktopMediaTests(unittest.TestCase):
             species_texts = [window.species_list.item(index).text() for index in range(window.species_list.count())]
             self.assertTrue(species_texts)
             self.assertFalse(any("Master species list" in text for text in species_texts))
+            second_species = window.species_list.item(1)
+            window.species_list.setCurrentItem(second_species)
+            self.app.processEvents()
+            self.assertEqual(
+                window.annotation_species.currentData(),
+                second_species.data(Qt.ItemDataRole.UserRole),
+            )
+            self.assertIn(second_species.text().splitlines()[0], window.annotation_editor_status.text())
+            window.close()
+
+    def test_left_species_does_not_silently_relabel_a_selected_box(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "fish.jpg"
+            cv2.imwrite(str(image_path), np.full((32, 48, 3), 80, dtype=np.uint8))
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Species selection")
+            media = db.add_video(
+                project["id"], image_path, duration=0, width=48, height=32,
+                fps=1, frame_count=1, media_type="image"
+            )
+            db.ensure_frame(media["id"], 0, 0)
+            db.update_frame(media["id"], 0, image_path=image_path)
+            species = db.list_species()[:2]
+            annotation = db.add_annotation(
+                video_id=media["id"], frame_number=0, time_seconds=0,
+                species_id=species[0]["id"], track_id="FISH-001", box=(.1, .1, .2, .2),
+                status="verified", source="manual",
+            )
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(window.video_combo.findData(media["id"]))
+            window.select_annotation_by_id(annotation["id"])
+
+            second_item = next(
+                window.species_list.item(index)
+                for index in range(window.species_list.count())
+                if window.species_list.item(index).data(Qt.ItemDataRole.UserRole) == species[1]["id"]
+            )
+            window.species_list.setCurrentItem(second_item)
+            self.app.processEvents()
+            self.assertEqual(window.annotation_species.currentData(), species[0]["id"])
+            self.assertEqual(db.get_annotation(annotation["id"])["species_id"], species[0]["id"])
+
+            window.select_annotation_by_id(None)
+            self.assertEqual(window.annotation_species.currentData(), species[1]["id"])
             window.close()
 
     def test_background_playback_keeps_qt_events_responsive(self):

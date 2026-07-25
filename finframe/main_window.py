@@ -372,6 +372,7 @@ class MainWindow(QMainWindow):
         self.species_search.textChanged.connect(self.refresh_species)
         self.species_list = QListWidget()
         self.species_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.species_list.currentItemChanged.connect(self.active_species_changed)
         add_species = QPushButton("Add species")
         add_species.clicked.connect(self.add_species)
         species_layout.addWidget(self.species_search)
@@ -454,6 +455,7 @@ class MainWindow(QMainWindow):
         self.frame_complete = QCheckBox("Frame complete — all visible fish are boxed")
         self.frame_complete.toggled.connect(self.frame_complete_toggled)
         self.training_keyframe_status = QLabel("Not complete; excluded from final MaxN and training")
+        self.annotation_editor_status = QLabel("Select a species on the left before drawing")
         self.annotation_table = QTableWidget(0, 5)
         self.annotation_table.setHorizontalHeaderLabels(["Status", "Species", "Track", "Source", "Confidence"])
         self.annotation_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -464,6 +466,7 @@ class MainWindow(QMainWindow):
         annotation_layout.addWidget(self.frame_complete)
         annotation_layout.addWidget(self.training_keyframe_status)
         annotation_layout.addWidget(self.annotation_table, 1)
+        annotation_layout.addWidget(self.annotation_editor_status)
         form = QFormLayout()
         self.annotation_species = QComboBox()
         self.annotation_track = QLineEdit()
@@ -481,11 +484,14 @@ class MainWindow(QMainWindow):
         action_row = QGridLayout()
         self.save_annotation_button = QPushButton("Save changes")
         self.save_annotation_button.clicked.connect(self.save_annotation_changes)
+        self.save_annotation_button.setEnabled(False)
         self.approve_button = QPushButton("Approve proposal")
         self.approve_button.clicked.connect(self.approve_annotation)
+        self.approve_button.setEnabled(False)
         self.reject_button = QPushButton("Reject + stop track")
         self.reject_button.clicked.connect(self.reject_annotation)
         self.reject_button.setToolTip("Reject this proposal and stop propagating its track")
+        self.reject_button.setEnabled(False)
         self.approve_frame_button = QPushButton("Approve all unchanged proposals on frame")
         self.approve_frame_button.clicked.connect(self.approve_frame_proposals)
         next_pending_button = QPushButton("Next pending frame")
@@ -1118,6 +1124,7 @@ class MainWindow(QMainWindow):
         query = self.species_search.text().strip().lower() if hasattr(self, "species_search") else ""
         species = [item for item in self.db.list_species() if query in f"{item['common_name']} {item['scientific_name']} {item['code']}".lower()]
         selected = self.species_list.currentItem().data(Qt.ItemDataRole.UserRole) if self.species_list.currentItem() else None
+        editor_species = self.annotation_species.currentData() if self.selected_annotation_id else None
         self.species_list.clear()
         for item in species:
             scientific = str(item["scientific_name"] or "").strip()
@@ -1136,6 +1143,39 @@ class MainWindow(QMainWindow):
         self.annotation_species.clear()
         for item in self.db.list_species():
             self.annotation_species.addItem(f"{item['common_name']} · {item['code']}", item["id"])
+        if self.selected_annotation_id is not None and editor_species:
+            self.annotation_species.setCurrentIndex(self.annotation_species.findData(editor_species))
+        else:
+            self._show_active_species_in_editor()
+
+    def active_species_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if self.selected_annotation_id is None:
+            self._show_active_species_in_editor(current)
+
+    def _show_active_species_in_editor(self, item: QListWidgetItem | None = None) -> None:
+        item = item or self.species_list.currentItem()
+        species_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+        index = self.annotation_species.findData(species_id) if species_id else -1
+        if index >= 0:
+            with QSignalBlocker(self.annotation_species):
+                self.annotation_species.setCurrentIndex(index)
+            species_name = item.text().splitlines()[0]
+            self.annotation_editor_status.setText(f"Next box species: {species_name}")
+        else:
+            self.annotation_editor_status.setText("Select a species on the left before drawing")
+        self.annotation_track.clear()
+        self.annotation_stage.setCurrentText("Adult")
+        self.annotation_activity.setCurrentText("Passing")
+        self.annotation_uncertain.setChecked(False)
+        for control in (
+            self.annotation_species,
+            self.annotation_track,
+            self.annotation_stage,
+            self.annotation_activity,
+            self.annotation_uncertain,
+            self.save_annotation_button,
+        ):
+            control.setEnabled(False)
 
     def add_species(self) -> None:
         common, ok = QInputDialog.getText(self, "Add species", "Common name")
@@ -1221,6 +1261,10 @@ class MainWindow(QMainWindow):
             self.canvas.set_annotations([])
             return
         annotations = self.db.annotations_for_frame(self.current_video["id"], self.current_frame)
+        if self.selected_annotation_id and not any(
+            annotation["id"] == self.selected_annotation_id for annotation in annotations
+        ):
+            self.selected_annotation_id = None
         self.canvas.set_annotations(annotations)
         self.annotation_table.setRowCount(len(annotations))
         for row, annotation in enumerate(annotations):
@@ -1238,6 +1282,8 @@ class MainWindow(QMainWindow):
                 self.annotation_table.setItem(row, column, item)
             if annotation["id"] == self.selected_annotation_id:
                 self.annotation_table.selectRow(row)
+        if self.selected_annotation_id is None:
+            self._show_active_species_in_editor()
         verified_count = sum(item["status"] == "verified" for item in annotations)
         pending_count = sum(item["status"] == "pending" for item in annotations)
         try:
@@ -1270,10 +1316,23 @@ class MainWindow(QMainWindow):
         self.selected_annotation_id = annotation_id
         self.canvas.select_annotation(annotation_id)
         if not annotation_id:
+            with QSignalBlocker(self.annotation_table):
+                self.annotation_table.clearSelection()
+            self._show_active_species_in_editor()
             self.approve_button.setEnabled(False)
             self.reject_button.setEnabled(False)
             return
         annotation = self.db.get_annotation(annotation_id)
+        self.annotation_editor_status.setText(f"Editing selected box: {annotation['common_name']}")
+        for control in (
+            self.annotation_species,
+            self.annotation_track,
+            self.annotation_stage,
+            self.annotation_activity,
+            self.annotation_uncertain,
+            self.save_annotation_button,
+        ):
+            control.setEnabled(True)
         self.annotation_species.setCurrentIndex(self.annotation_species.findData(annotation["species_id"]))
         self.annotation_track.setText(annotation["track_id"])
         self.annotation_stage.setCurrentText(annotation["life_stage"])
