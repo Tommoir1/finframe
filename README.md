@@ -10,7 +10,7 @@ The application is local-first. Video remains on the workstation, while projects
 2. Create a survey project and record deployment, site and observer metadata.
 3. Add one or more source videos, choose multiple still-image files, or import an image folder including its subfolders.
 4. Select a species and draw a box around every visible fish on an observation frame or image.
-5. Optionally enable **SAM-assisted click annotation** while paused. Click the fish, add positive clicks over missed fish pixels or Shift/right-click background that was included, then choose **Accept mask + box**. Use **Reset mask** or **Use manual box** whenever SAM is unhelpful.
+5. Optionally enable **SAM-assisted click annotation** while paused. Click the fish, add positive clicks over missed fish pixels or Shift/right-click background that was included, then choose **Accept mask + box**. **Use one manual box** temporarily switches to box drawing for one fish and then restores SAM automatically; uncheck SAM to remain in box-only mode.
 6. Mark the frame complete only after every visible fish is boxed. Only complete frames contribute to final MaxN.
 7. For video, optionally choose 0.5× through 6× playback and press Play. Box propagation is off by default, keeping fast-forward-and-pause surveys manual and responsive.
 8. Optionally enable the experimental box-propagation checkbox for a continuous segment. Propagated, AI or detector-tracker boxes enter as pending proposals and are visibly dashed.

@@ -447,6 +447,7 @@ class MainWindow(QMainWindow):
         self.sam_revision = 0
         self._sam_rerun_requested = False
         self.sam_context: tuple[str, int] | None = None
+        self.sam_manual_override = False
         self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
         self.resize(1480, 920)
@@ -542,13 +543,13 @@ class MainWindow(QMainWindow):
         self.canvas.samPointCreated.connect(self.sam_point_added)
         video_layout.addWidget(self.canvas, 1)
         self.timeline_row = QWidget()
+        self.timeline_row.setObjectName("timelineRow")
+        self.timeline_row.setMinimumHeight(30)
         timeline_layout = QHBoxLayout(self.timeline_row)
-        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.setContentsMargins(8, 3, 8, 3)
         self.timeline = QSlider(Qt.Orientation.Horizontal)
         self.timeline.valueChanged.connect(self.seek_frame)
-        self.frame_label = QLabel("Frame 0 · 00:00.000")
         timeline_layout.addWidget(self.timeline, 1)
-        timeline_layout.addWidget(self.frame_label)
         video_layout.addWidget(self.timeline_row)
         controls = QHBoxLayout()
         self.play_button = QPushButton("▶")
@@ -571,6 +572,9 @@ class MainWindow(QMainWindow):
         self.playback_speed.currentIndexChanged.connect(self.playback_speed_changed)
         controls.addWidget(self.playback_speed)
         controls.addStretch(1)
+        self.frame_label = QLabel("No media")
+        self.frame_label.setObjectName("mediaPositionLabel")
+        controls.addWidget(self.frame_label)
         video_layout.addLayout(controls)
         seed_controls = QHBoxLayout()
         self.seed_tracking_checkbox = QCheckBox("Enable box propagation while playing (experimental)")
@@ -600,7 +604,10 @@ class MainWindow(QMainWindow):
         self.sam_undo_button.clicked.connect(self.undo_sam_point)
         self.sam_reset_button = QPushButton("Reset mask")
         self.sam_reset_button.clicked.connect(self.reset_sam_preview)
-        self.sam_manual_button = QPushButton("Use manual box")
+        self.sam_manual_button = QPushButton("Use one manual box")
+        self.sam_manual_button.setToolTip(
+            "Temporarily draw one bounding box, then return automatically to SAM point mode"
+        )
         self.sam_manual_button.clicked.connect(self.use_manual_box_mode)
         self.sam_accept_button = QPushButton("Accept mask + box")
         self.sam_accept_button.setObjectName("samAcceptButton")
@@ -704,9 +711,11 @@ class MainWindow(QMainWindow):
         self.approve_segment_button.clicked.connect(self.approve_watched_segment)
         delete_button = QPushButton("Delete")
         delete_button.clicked.connect(self.delete_annotation)
-        self.clear_video_boxes_button = QPushButton("Clear all boxes from this video")
+        self.clear_video_boxes_button = QPushButton("Clear all boxes from this media")
         self.clear_video_boxes_button.setObjectName("dangerButton")
-        self.clear_video_boxes_button.setToolTip("Permanently delete every bounding box from the selected video")
+        self.clear_video_boxes_button.setToolTip(
+            "Permanently delete every bounding box from the selected image or video"
+        )
         self.clear_video_boxes_button.setEnabled(False)
         self.clear_video_boxes_button.clicked.connect(self.clear_all_video_boxes)
         action_row.addWidget(self.approve_button, 0, 0)
@@ -791,6 +800,8 @@ class MainWindow(QMainWindow):
             QToolBar QToolButton:hover { background: #1d493c; border-color: #467466; }
             QToolBar QToolButton:pressed { background: #28614f; }
             QToolBar::separator { background: #41665a; width: 1px; margin: 4px 3px; }
+            QWidget#timelineRow { background: #e7eeea; border: 1px solid #c5d3cd; border-radius: 5px; }
+            QLabel#mediaPositionLabel { color: #344b42; background: transparent; font-weight: 600; padding: 0 4px; }
             QGroupBox { font-weight: 700; border: 1px solid #cbd8d2; border-radius: 8px; margin-top: 10px; padding-top: 12px; background: white; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
             QPushButton { background: #e5eee9; border: 1px solid #b7cbc2; border-radius: 6px; padding: 7px 10px; }
@@ -1124,6 +1135,7 @@ class MainWindow(QMainWindow):
         )
         is_image = bool(self.current_video and self.current_video.get("media_type") == "image")
         playing = bool(self.playback_worker and self.playback_worker.isRunning())
+        has_media = bool(self.current_video)
         for control in (
             self.play_button,
             self.back_button,
@@ -1143,14 +1155,21 @@ class MainWindow(QMainWindow):
         )
         self.sam_checkbox.setEnabled(sam_available)
         self.approve_segment_button.setEnabled(playable and not playing)
-        self.clear_video_boxes_button.setEnabled(
-            bool(self.current_video and self.current_video.get("media_type") == "video") and not playing
+        media_noun = "image" if is_image else "video"
+        self.clear_video_boxes_button.setText(f"Clear all boxes from this {media_noun}")
+        self.clear_video_boxes_button.setToolTip(
+            f"Permanently delete every bounding box from the selected {media_noun}"
         )
+        self.clear_video_boxes_button.setEnabled(has_media and not playing)
+        self.timeline_row.setVisible(has_media and not is_image)
         self.previous_button.setText("◀ Image" if is_image else "◀ Frame")
         self.following_button.setText("Image ▶" if is_image else "Frame ▶")
         self.previous_button.setEnabled(playable or (is_image and self._adjacent_image_index(-1) is not None))
         self.following_button.setEnabled(playable or (is_image and self._adjacent_image_index(1) is not None))
         self.canvas.setEnabled(not playing)
+        self.canvas.set_sam_mode(
+            bool(sam_available and self.sam_checkbox.isChecked() and not self.sam_manual_override)
+        )
         self.annotation_panel.setEnabled(not playing)
         self._refresh_sam_controls()
 
@@ -1162,6 +1181,18 @@ class MainWindow(QMainWindow):
                 return index
             index += 1 if direction > 0 else -1
         return None
+
+    def _image_position(self) -> tuple[int, int]:
+        image_indices = [
+            index
+            for index in range(self.video_combo.count())
+            if self.video_combo.itemData(index, Qt.ItemDataRole.UserRole + 1) == "image"
+        ]
+        try:
+            position = image_indices.index(self.video_combo.currentIndex()) + 1
+        except ValueError:
+            position = 1 if image_indices else 0
+        return position, len(image_indices)
 
     def navigate_relative(self, direction: int) -> None:
         if not self.current_video:
@@ -1234,8 +1265,15 @@ class MainWindow(QMainWindow):
         self.canvas.set_frame(qimage)
         with QSignalBlocker(self.timeline):
             self.timeline.setValue(frame_number)
-        seconds = frame_number / max(0.001, self._fps())
-        self.frame_label.setText(f"Frame {frame_number:,} · {self._timecode(seconds)}")
+        if self.current_video and self.current_video.get("media_type") == "image":
+            position, image_count = self._image_position()
+            self.frame_label.setText(f"Image {position:,} of {image_count:,}")
+        else:
+            seconds = frame_number / max(0.001, self._fps())
+            duration = float(self.current_video.get("duration") or 0) if self.current_video else 0
+            self.frame_label.setText(
+                f"Frame {frame_number:,} · {self._timecode(seconds)} / {self._timecode(duration)}"
+            )
         self.refresh_frame_annotations(refresh_maxn=refresh_maxn)
 
     def toggle_playback(self) -> None:
@@ -1247,7 +1285,10 @@ class MainWindow(QMainWindow):
         if not self._persist_selected_annotation():
             return
         if self.sam_checkbox.isChecked():
-            self.use_manual_box_mode()
+            self.sam_manual_override = False
+            self.reset_sam_preview()
+            self.canvas.set_sam_mode(False)
+            self.sam_status.setText("SAM point mode pauses during video playback")
         if self.current_frame >= int(self.current_video["frame_count"]) - 1:
             self.seek_frame(0)
         if self.review_segment_start is None:
@@ -1268,8 +1309,8 @@ class MainWindow(QMainWindow):
         worker.finished.connect(self.playback_finished)
         self.playback_worker = worker
         self.play_button.setText("Ⅱ")
-        self._configure_media_controls()
         worker.start()
+        self._configure_media_controls()
 
     def playback_frame_ready(self, frame_number: int, image: Any) -> None:
         worker = self.sender()
@@ -1286,6 +1327,11 @@ class MainWindow(QMainWindow):
         self.playback_worker = None
         self.play_button.setText("▶")
         self._configure_media_controls()
+        if self.sam_checkbox.isChecked():
+            self.sam_status.setText(
+                f"{self.sam_capability.model_name}: click the fish; "
+                "Shift-click or right-click regions that should be excluded"
+            )
         self._refresh_seed_tracking_status()
 
     def stop_playback(self, *, refresh: bool) -> None:
@@ -1302,6 +1348,11 @@ class MainWindow(QMainWindow):
         self.playback_worker = None
         self.play_button.setText("▶")
         self._configure_media_controls()
+        if self.sam_checkbox.isChecked():
+            self.sam_status.setText(
+                f"{self.sam_capability.model_name}: click the fish; "
+                "Shift-click or right-click regions that should be excluded"
+            )
         self._refresh_seed_tracking_status()
 
     def playback_speed_changed(self) -> None:
@@ -1313,16 +1364,22 @@ class MainWindow(QMainWindow):
     def _refresh_sam_controls(self) -> None:
         if not hasattr(self, "sam_checkbox"):
             return
+        playing = bool(self.playback_worker and self.playback_worker.isRunning())
         active = bool(
             self.sam_checkbox.isChecked()
             and self.sam_capability.available
             and self.current_image is not None
+            and not playing
         )
         has_points = bool(self.sam_points)
-        self.sam_undo_button.setEnabled(active and has_points)
-        self.sam_reset_button.setEnabled(active and has_points)
+        point_mode = active and not self.sam_manual_override
+        self.sam_undo_button.setEnabled(point_mode and has_points)
+        self.sam_reset_button.setEnabled(point_mode and has_points)
+        self.sam_manual_button.setText(
+            "Return to SAM points" if self.sam_manual_override else "Use one manual box"
+        )
         self.sam_manual_button.setEnabled(active)
-        self.sam_accept_button.setEnabled(active and self.sam_result is not None)
+        self.sam_accept_button.setEnabled(point_mode and self.sam_result is not None)
 
     def sam_assist_toggled(self, enabled: bool) -> None:
         if enabled and not self.sam_capability.available:
@@ -1330,16 +1387,19 @@ class MainWindow(QMainWindow):
                 self.sam_checkbox.setChecked(False)
             self.sam_status.setText(self.sam_capability.message)
             self.canvas.set_sam_mode(False)
+            self.sam_manual_override = False
             self._refresh_sam_controls()
             return
         if enabled:
             self.stop_playback(refresh=False)
+            self.sam_manual_override = False
             self.canvas.set_sam_mode(True)
             self.sam_status.setText(
                 f"{self.sam_capability.model_name}: click the fish; "
                 "Shift-click or right-click regions that should be excluded"
             )
         else:
+            self.sam_manual_override = False
             self.reset_sam_preview()
             self.canvas.set_sam_mode(False)
             self.sam_status.setText(self.sam_capability.message)
@@ -1392,12 +1452,20 @@ class MainWindow(QMainWindow):
         self._refresh_sam_controls()
 
     def use_manual_box_mode(self, *_args: Any) -> None:
-        if self.sam_checkbox.isChecked():
-            self.sam_checkbox.setChecked(False)
+        if not self.sam_checkbox.isChecked():
+            return
+        if self.sam_manual_override:
+            self.sam_manual_override = False
+            self.canvas.set_sam_mode(True)
+            self.sam_status.setText("SAM point mode restored. Click a fish.")
         else:
             self.reset_sam_preview()
+            self.sam_manual_override = True
             self.canvas.set_sam_mode(False)
-        self.sam_status.setText("Manual bounding-box mode")
+            self.sam_status.setText(
+                "Draw one manual bounding box. SAM point mode will resume automatically afterward."
+            )
+        self._refresh_sam_controls()
 
     def _request_sam_mask(self) -> None:
         if self.sam_worker and self.sam_worker.isRunning():
@@ -1764,6 +1832,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("AI suggested a species for the drawn box — approve or correct it before it is counted", 8000)
         else:
             self.training.maybe_schedule("verified annotation threshold")
+        if self.sam_manual_override:
+            self.sam_manual_override = False
+            self.canvas.set_sam_mode(self.sam_checkbox.isChecked())
+            self.sam_status.setText("Manual box saved. SAM point mode restored for the next fish.")
+            self._refresh_sam_controls()
 
     def canvas_box_changed(self, annotation_id: str, box: tuple[float, float, float, float]) -> None:
         self.db.update_annotation(annotation_id, x=box[0], y=box[1], width=box[2], height=box[3])
@@ -2006,8 +2079,10 @@ class MainWindow(QMainWindow):
             self.training.maybe_schedule("verified annotation deleted")
 
     def clear_all_video_boxes(self) -> None:
-        if not self.current_video or self.current_video.get("media_type") != "video":
+        if not self.current_video:
             return
+        is_image = self.current_video.get("media_type") == "image"
+        media_noun = "image" if is_image else "video"
         if self.tracking_worker and self.tracking_worker.isRunning():
             QMessageBox.information(
                 self,
@@ -2024,15 +2099,27 @@ class MainWindow(QMainWindow):
             return
         stats = self.db.video_annotation_stats(self.current_video["id"])
         if not stats["total"]:
-            QMessageBox.information(self, "No boxes to clear", "This video has no bounding boxes.")
+            QMessageBox.information(
+                self,
+                "No boxes to clear",
+                f"This {media_noun} has no bounding boxes.",
+            )
             return
+        affected_text = (
+            "The image will be marked incomplete and removed from MaxN and future training datasets. "
+            "Other images and videos are unchanged."
+            if is_image
+            else
+            f"Affected frames will be marked incomplete and removed from MaxN and future training "
+            f"datasets. Other images and videos are unchanged."
+        )
+        frame_scope = "" if is_image else f" across {stats['frames']:,} frames"
         if QMessageBox.question(
             self,
-            "Clear every box from this video?",
+            f"Clear every box from this {media_noun}?",
             f"Permanently delete all {stats['total']:,} bounding boxes from {self.current_video['file_name']}?\n\n"
             f"This includes {stats['verified']:,} verified, {stats['pending']:,} pending and "
-            f"{stats['rejected']:,} rejected boxes across {stats['frames']:,} frames. Affected frames will be "
-            "marked incomplete and removed from MaxN and future training datasets. Other videos are unchanged.\n\n"
+            f"{stats['rejected']:,} rejected boxes{frame_scope}. {affected_text}\n\n"
             "Existing trained model files are not changed. This action cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -2042,12 +2129,13 @@ class MainWindow(QMainWindow):
         self.seed_tracking.clear()
         self.selected_annotation_id = None
         self.review_segment_start = None
+        self.reset_sam_preview()
         deleted = self.db.clear_video_annotations(self.current_video["id"])
         self._refresh_seed_tracking_status()
         self.refresh_frame_annotations()
         self.refresh_training_status()
         self.statusBar().showMessage(
-            f"Cleared {deleted['total']:,} boxes from {self.current_video['file_name']}",
+            f"Cleared {deleted['total']:,} boxes from this {media_noun}",
             8000,
         )
 

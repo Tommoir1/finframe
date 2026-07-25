@@ -91,6 +91,52 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertEqual(window.current_video["id"], first["id"])
             window.close()
 
+    def test_image_clear_action_and_position_display_are_image_specific(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Image clearing")
+            media = []
+            for index in range(2):
+                path = root / f"fish-{index + 1}.jpg"
+                cv2.imwrite(str(path), np.full((24, 32, 3), 60 + index * 30, dtype=np.uint8))
+                image = db.add_video(
+                    project["id"], path, duration=0, width=32, height=24,
+                    fps=1, frame_count=1, media_type="image",
+                )
+                db.ensure_frame(image["id"], 0, 0)
+                db.update_frame(image["id"], 0, image_path=path)
+                media.append(image)
+            species = db.list_species()[0]
+            for image in media:
+                db.add_annotation(
+                    video_id=image["id"], frame_number=0, time_seconds=0,
+                    species_id=species["id"], track_id=f"{species['code']}-001",
+                    box=(.1, .1, .2, .2), status="verified", source="manual",
+                )
+
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(window.video_combo.findData(media[0]["id"]))
+            self.app.processEvents()
+
+            self.assertTrue(window.clear_video_boxes_button.isEnabled())
+            self.assertEqual(
+                window.clear_video_boxes_button.text(),
+                "Clear all boxes from this image",
+            )
+            self.assertTrue(window.timeline_row.isHidden())
+            self.assertEqual(window.frame_label.text(), "Image 1 of 2")
+            with patch(
+                "finframe.main_window.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                window.clear_all_video_boxes()
+
+            self.assertEqual(db.video_annotation_stats(media[0]["id"])["total"], 0)
+            self.assertEqual(db.video_annotation_stats(media[1]["id"])["total"], 1)
+            window.close()
+
     def test_multi_image_import_opens_first_photo_for_forward_review(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -253,7 +299,17 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertTrue(window.sam_checkbox.isChecked())
 
             window.use_manual_box_mode()
-            self.assertFalse(window.sam_checkbox.isChecked())
+            self.assertTrue(window.sam_checkbox.isChecked())
+            self.assertTrue(window.sam_manual_override)
+            self.assertEqual(window.sam_manual_button.text(), "Return to SAM points")
+            window.create_manual_box((.1, .1, .2, .2))
+            self.assertFalse(window.sam_manual_override)
+            self.assertTrue(window.sam_checkbox.isChecked())
+            self.assertTrue(window.canvas._sam_enabled)
+            self.assertEqual(len(db.annotations_for_frame(media["id"], 0)), 2)
+
+            window.sam_checkbox.setChecked(False)
+            self.assertFalse(window.canvas._sam_enabled)
             window.close()
 
     def test_left_species_does_not_silently_relabel_a_selected_box(self):
@@ -449,6 +505,11 @@ class DesktopMediaTests(unittest.TestCase):
             self.app.processEvents()
 
             self.assertTrue(window.clear_video_boxes_button.isEnabled())
+            self.assertEqual(
+                window.clear_video_boxes_button.text(),
+                "Clear all boxes from this video",
+            )
+            self.assertFalse(window.timeline_row.isHidden())
             with patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
                 window.clear_all_video_boxes()
 
