@@ -9,8 +9,17 @@ from time import perf_counter
 from typing import Any
 
 import cv2
-from PySide6.QtCore import QSignalBlocker, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence
+from PySide6.QtCore import QSize, QSignalBlocker, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -21,6 +30,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHeaderView,
@@ -38,7 +48,6 @@ from PySide6.QtWidgets import (
     QSlider,
     QSplitter,
     QStatusBar,
-    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -89,6 +98,32 @@ def suggested_species_code(name: str) -> str:
     """Create a readable, deterministic class code for a new taxon."""
     tokens = re.findall(r"[A-Za-z0-9]+", name.upper())
     return f"USR-{'-'.join(tokens)}" if tokens else "USR-SPECIES"
+
+
+def navigation_arrow_icon(direction: int) -> QIcon:
+    """Draw a high-resolution arrow instead of using a platform bitmap icon."""
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(
+        QPen(
+            QColor("#173b30"),
+            6,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+    )
+    points = (
+        ((40, 13), (21, 32), (40, 51))
+        if direction < 0
+        else ((24, 13), (43, 32), (24, 51))
+    )
+    painter.drawLine(*points[0], *points[1])
+    painter.drawLine(*points[1], *points[2])
+    painter.end()
+    return QIcon(pixmap)
 
 
 class ProjectDialog(QDialog):
@@ -355,6 +390,63 @@ class PlaybackWorker(QThread):
             capture.release()
 
 
+class FrameSeekWorker(QThread):
+    """Decode only the newest requested scrub frame away from the UI thread."""
+
+    frame_ready = Signal(int, object)
+    failed = Signal(str)
+
+    def __init__(self, video: dict[str, Any]):
+        super().__init__()
+        self.video = dict(video)
+        self._condition = threading.Condition()
+        self._requested_frame: int | None = None
+        self._stopping = False
+
+    def request_frame(self, frame_number: int) -> None:
+        with self._condition:
+            self._requested_frame = int(frame_number)
+            self._condition.notify()
+
+    def stop(self) -> None:
+        with self._condition:
+            self._stopping = True
+            self._condition.notify()
+
+    def run(self) -> None:
+        capture = cv2.VideoCapture(self.video["path"])
+        try:
+            if not capture.isOpened():
+                raise RuntimeError("OpenCV could not open the video for seeking")
+            while True:
+                with self._condition:
+                    self._condition.wait_for(
+                        lambda: self._stopping
+                        or self._requested_frame is not None
+                    )
+                    if self._stopping:
+                        return
+                    frame_number = int(self._requested_frame)
+                    self._requested_frame = None
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                ok, image = capture.read()
+                if not ok:
+                    self.failed.emit(
+                        f"Could not decode frame {frame_number:,}"
+                    )
+                    continue
+                with self._condition:
+                    if self._stopping:
+                        return
+                    newer_request_waiting = self._requested_frame is not None
+                if not newer_request_waiting:
+                    self.frame_ready.emit(frame_number, image)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        finally:
+            capture.release()
+
+
 class SamMaskWorker(QThread):
     completed = Signal(int, object)
     failed = Signal(int, str)
@@ -404,6 +496,10 @@ class MainWindow(QMainWindow):
         self.review_segment_start: int | None = None
         self.tracking_worker: TrackingWorker | None = None
         self.playback_worker: PlaybackWorker | None = None
+        self.seek_worker: FrameSeekWorker | None = None
+        self._timeline_scrubbing = False
+        self._pending_seek_frame: int | None = None
+        self._resume_playback_after_scrub = False
         self.sam_engine = SamAssistEngine(data_dir)
         self.sam_capability = self.sam_engine.capability()
         self.sam_worker: SamMaskWorker | None = None
@@ -522,6 +618,37 @@ class MainWindow(QMainWindow):
         self.canvas.selectionChanged.connect(self.select_annotation_by_id)
         self.canvas.samPointCreated.connect(self.sam_point_added)
         video_layout.addWidget(self.canvas, 1)
+        self.focus_species_panel = QFrame(self.canvas)
+        self.focus_species_panel.setObjectName("focusSpeciesPanel")
+        self.focus_species_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        focus_species_layout = QVBoxLayout(self.focus_species_panel)
+        focus_species_layout.setContentsMargins(10, 10, 10, 10)
+        focus_species_layout.setSpacing(6)
+        focus_species_title = QLabel("Next fish species")
+        focus_species_title.setObjectName("focusSpeciesTitle")
+        self.focus_species_current = QLabel("Select a species")
+        self.focus_species_current.setObjectName("focusSpeciesCurrent")
+        self.focus_species_current.setWordWrap(True)
+        self.focus_species_search = QLineEdit()
+        self.focus_species_search.setPlaceholderText("Search species or code")
+        self.focus_species_search.setClearButtonEnabled(True)
+        self.focus_species_search.textChanged.connect(self.refresh_focus_species)
+        self.focus_species_list = QListWidget()
+        self.focus_species_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.focus_species_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.focus_species_list.setWordWrap(True)
+        self.focus_species_list.currentItemChanged.connect(
+            self.focus_species_changed
+        )
+        focus_species_layout.addWidget(focus_species_title)
+        focus_species_layout.addWidget(self.focus_species_current)
+        focus_species_layout.addWidget(self.focus_species_search)
+        focus_species_layout.addWidget(self.focus_species_list, 1)
+        self.focus_species_panel.hide()
         self.media_navigation_panel = QWidget()
         self.media_navigation_panel.setObjectName("mediaNavigationPanel")
         navigation_layout = QVBoxLayout(self.media_navigation_panel)
@@ -533,7 +660,9 @@ class MainWindow(QMainWindow):
         timeline_layout = QHBoxLayout(self.timeline_row)
         timeline_layout.setContentsMargins(8, 3, 8, 3)
         self.timeline = QSlider(Qt.Orientation.Horizontal)
-        self.timeline.valueChanged.connect(self.seek_frame)
+        self.timeline.sliderPressed.connect(self.timeline_scrub_started)
+        self.timeline.sliderMoved.connect(self.timeline_scrub_moved)
+        self.timeline.sliderReleased.connect(self.timeline_scrub_finished)
         timeline_layout.addWidget(self.timeline, 1)
         navigation_layout.addWidget(self.timeline_row)
         self.playback_controls_row = QWidget()
@@ -543,14 +672,12 @@ class MainWindow(QMainWindow):
         self.play_button = QPushButton("▶")
         self.play_button.clicked.connect(self.toggle_playback)
         self.previous_button = QPushButton("Previous")
-        self.previous_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
-        )
+        self.previous_button.setIcon(navigation_arrow_icon(-1))
+        self.previous_button.setIconSize(QSize(15, 15))
         self.previous_button.clicked.connect(lambda: self.navigate_relative(-1))
         self.following_button = QPushButton("Next")
-        self.following_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
-        )
+        self.following_button.setIcon(navigation_arrow_icon(1))
+        self.following_button.setIconSize(QSize(15, 15))
         self.following_button.clicked.connect(lambda: self.navigate_relative(1))
         self.back_button = QPushButton("−5 s")
         self.back_button.clicked.connect(lambda: self.seek_video_relative(-round(self._fps() * 5)))
@@ -577,6 +704,7 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignHCenter,
         )
         self.canvas.imageRectChanged.connect(self.align_media_navigation)
+        self.canvas.imageRectChanged.connect(self.position_focus_species_panel)
         sam_controls = QHBoxLayout()
         self.sam_checkbox = QCheckBox("Enable SAM-assisted click annotation")
         self.sam_checkbox.setObjectName("samAssistCheckbox")
@@ -810,6 +938,13 @@ class MainWindow(QMainWindow):
             QToolBar QToolButton:hover { background: #1d493c; border-color: #467466; }
             QToolBar QToolButton:pressed { background: #28614f; }
             QToolBar::separator { background: #41665a; width: 1px; margin: 4px 3px; }
+            QFrame#focusSpeciesPanel { background: rgba(10, 31, 25, 232); border: 1px solid #6b9586; border-radius: 8px; }
+            QFrame#focusSpeciesPanel QLabel#focusSpeciesTitle { color: #f4fbf8; background: transparent; font-size: 14px; font-weight: 700; }
+            QFrame#focusSpeciesPanel QLabel#focusSpeciesCurrent { color: #bfe7d8; background: transparent; font-weight: 600; }
+            QFrame#focusSpeciesPanel QLineEdit { background: #f8fbf9; color: #14251f; }
+            QFrame#focusSpeciesPanel QListWidget { background: rgba(248, 251, 249, 245); color: #14251f; border-color: #6b9586; }
+            QFrame#focusSpeciesPanel QListWidget::item { padding: 5px; }
+            QFrame#focusSpeciesPanel QListWidget::item:selected { background: #b9dfd1; color: #102a22; }
             QWidget#timelineRow { background: #e7eeea; border: 1px solid #c5d3cd; border-radius: 5px; }
             QLabel#mediaPositionLabel { color: #344b42; background: transparent; font-weight: 600; padding: 0 4px; }
             QGroupBox { font-weight: 700; border: 1px solid #cbd8d2; border-radius: 8px; margin-top: 10px; padding-top: 12px; background: white; }
@@ -838,6 +973,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.stop_playback(refresh=False)
+        self._stop_seek_worker()
         if self.sam_worker and self.sam_worker.isRunning():
             self.sam_worker.wait()
         if hasattr(self, "training_timer"):
@@ -935,6 +1071,7 @@ class MainWindow(QMainWindow):
         if not self._persist_selected_annotation():
             return
         self.stop_playback(refresh=False)
+        self._stop_seek_worker()
         project_id = self.project_combo.itemData(index)
         self.current_project = self.db.get_project(project_id) if project_id else None
         self.refresh_videos()
@@ -1076,6 +1213,7 @@ class MainWindow(QMainWindow):
         if not self._persist_selected_annotation():
             return
         self.stop_playback(refresh=False)
+        self._stop_seek_worker()
         video_id = self.video_combo.itemData(index)
         if not video_id:
             return
@@ -1146,6 +1284,28 @@ class MainWindow(QMainWindow):
         )
         self.media_navigation_panel.setFixedWidth(rendered_width)
 
+    def position_focus_species_panel(self, image_rect: Any) -> None:
+        """Keep the focus-mode picker in the left gutter when one is available."""
+        if not hasattr(self, "focus_species_panel"):
+            return
+        margin = 12
+        canvas_width = max(1, self.canvas.width())
+        canvas_height = max(1, self.canvas.height())
+        left_gutter = max(0, int(round(float(image_rect.left()))))
+        if left_gutter >= 220 + (margin * 2):
+            panel_width = min(250, left_gutter - (margin * 2))
+        else:
+            panel_width = min(250, max(190, canvas_width // 5))
+        panel_height = max(220, min(540, canvas_height - (margin * 2)))
+        self.focus_species_panel.setGeometry(
+            margin,
+            margin,
+            panel_width,
+            panel_height,
+        )
+        if self.media_focus_mode:
+            self.focus_species_panel.raise_()
+
     def toggle_media_focus(self, *_args: Any) -> None:
         if not self.media_focus_mode and not self.current_video:
             return
@@ -1157,13 +1317,20 @@ class MainWindow(QMainWindow):
         self.species_panel.setVisible(not enabling)
         self.annotation_panel.setVisible(not enabling)
         self.bottom_tabs.setVisible(not enabling)
+        self.focus_species_panel.setVisible(enabling)
+        if enabling:
+            self.refresh_focus_species()
+            self.focus_species_panel.raise_()
         if not enabling and self._normal_splitter_sizes:
             sizes = list(self._normal_splitter_sizes)
             QTimer.singleShot(0, lambda: self.main_splitter.setSizes(sizes))
         self._configure_media_controls()
         QTimer.singleShot(
             0,
-            lambda: self.align_media_navigation(self.canvas._image_rect()),
+            lambda: (
+                self.align_media_navigation(self.canvas._image_rect()),
+                self.position_focus_species_panel(self.canvas._image_rect()),
+            ),
         )
         self.statusBar().showMessage(
             "Media enlarged · press Esc or Restore layout to return"
@@ -1185,31 +1352,41 @@ class MainWindow(QMainWindow):
         )
         is_image = bool(self.current_video and self.current_video.get("media_type") == "image")
         playing = bool(self.playback_worker and self.playback_worker.isRunning())
+        seeking = bool(
+            self._timeline_scrubbing or self._pending_seek_frame is not None
+        )
+        busy = playing or seeking
         has_media = bool(self.current_video)
         for control in (
             self.play_button,
             self.back_button,
             self.forward_button,
-            self.timeline,
             self.byte_button,
             self.bot_button,
         ):
-            control.setEnabled(playable and (control is self.play_button or not playing))
+            control.setEnabled(
+                playable
+                and (
+                    (control is self.play_button and not seeking)
+                    or (control is not self.play_button and not busy)
+                )
+            )
+        self.timeline.setEnabled(playable)
         self.playback_speed.setEnabled(playable)
         sam_available = bool(
             self.sam_capability.available
             and self.current_video
             and self.current_image is not None
-            and not playing
+            and not busy
         )
         self.sam_checkbox.setEnabled(sam_available)
-        self.approve_segment_button.setEnabled(playable and not playing)
+        self.approve_segment_button.setEnabled(playable and not busy)
         media_noun = "image" if is_image else "video"
         self.clear_video_boxes_button.setText(f"Clear all boxes from this {media_noun}")
         self.clear_video_boxes_button.setToolTip(
             f"Permanently delete every bounding box from the selected {media_noun}"
         )
-        self.clear_video_boxes_button.setEnabled(has_media and not playing)
+        self.clear_video_boxes_button.setEnabled(has_media and not busy)
         self.media_navigation_panel.setVisible(has_media)
         self.timeline_row.setVisible(has_media and not is_image)
         for video_only_control in (
@@ -1228,11 +1405,11 @@ class MainWindow(QMainWindow):
         self.following_button.setAccessibleName(next_description)
         self.previous_button.setEnabled(playable or (is_image and self._adjacent_image_index(-1) is not None))
         self.following_button.setEnabled(playable or (is_image and self._adjacent_image_index(1) is not None))
-        self.canvas.setEnabled(not playing)
+        self.canvas.setEnabled(not busy)
         self.canvas.set_sam_mode(
             bool(sam_available and self.sam_checkbox.isChecked() and not self.sam_manual_override)
         )
-        self.annotation_panel.setEnabled(not playing)
+        self.annotation_panel.setEnabled(not busy)
         self._refresh_sam_controls()
 
     def _adjacent_image_index(self, direction: int) -> int | None:
@@ -1270,6 +1447,152 @@ class MainWindow(QMainWindow):
     def seek_video_relative(self, frames: int) -> None:
         self.stop_playback(refresh=False)
         self.seek_frame(self.current_frame + frames)
+
+    def _ensure_seek_worker(self) -> bool:
+        if (
+            not self.current_video
+            or self.current_video.get("media_type") != "video"
+        ):
+            return False
+        if (
+            self.seek_worker
+            and self.seek_worker.isRunning()
+            and self.seek_worker.video.get("id") == self.current_video.get("id")
+        ):
+            return True
+        self._stop_seek_worker(reset_scrub_state=False)
+        worker = FrameSeekWorker(self.current_video)
+        worker.frame_ready.connect(self.timeline_seek_frame_ready)
+        worker.failed.connect(self.timeline_seek_failed)
+        self.seek_worker = worker
+        worker.start()
+        return True
+
+    def _stop_seek_worker(self, *, reset_scrub_state: bool = True) -> None:
+        worker = self.seek_worker
+        self.seek_worker = None
+        if worker and worker.isRunning():
+            worker.stop()
+            worker.wait()
+        if reset_scrub_state:
+            self._timeline_scrubbing = False
+            self._pending_seek_frame = None
+            self._resume_playback_after_scrub = False
+
+    def timeline_scrub_started(self) -> None:
+        if (
+            not self.current_video
+            or self.current_video.get("media_type") != "video"
+            or not self._persist_selected_annotation()
+        ):
+            return
+        self._timeline_scrubbing = True
+        self._pending_seek_frame = None
+        self._resume_playback_after_scrub = bool(
+            self.playback_worker and self.playback_worker.isRunning()
+        )
+        if self._resume_playback_after_scrub:
+            self.stop_playback(refresh=False)
+        if not self._ensure_seek_worker():
+            self._timeline_scrubbing = False
+            self._resume_playback_after_scrub = False
+            return
+        self.canvas.set_annotations([])
+        self._configure_media_controls()
+
+    def timeline_scrub_moved(self, frame_number: int) -> None:
+        if not self._timeline_scrubbing:
+            self.timeline_scrub_started()
+        if not self._timeline_scrubbing or not self.current_video:
+            return
+        frame_number = max(
+            0,
+            min(
+                int(self.current_video["frame_count"]) - 1,
+                int(frame_number),
+            ),
+        )
+        if frame_number != self.current_frame:
+            self.review_segment_start = None
+        self._pending_seek_frame = frame_number
+        seconds = frame_number / max(0.001, self._fps())
+        duration = float(self.current_video.get("duration") or 0)
+        self.frame_label.setText(
+            f"Seeking frame {frame_number:,} · "
+            f"{self._timecode(seconds)} / {self._timecode(duration)}"
+        )
+        if self.seek_worker:
+            self.seek_worker.request_frame(frame_number)
+
+    def timeline_scrub_finished(self) -> None:
+        if not self._timeline_scrubbing or not self.current_video:
+            return
+        target = max(
+            0,
+            min(
+                int(self.current_video["frame_count"]) - 1,
+                int(self.timeline.value()),
+            ),
+        )
+        self._timeline_scrubbing = False
+        self._pending_seek_frame = target
+        if self.current_frame == target and self.current_image is not None:
+            self._complete_timeline_seek()
+            return
+        if self.seek_worker:
+            self.seek_worker.request_frame(target)
+        self._configure_media_controls()
+
+    def timeline_seek_frame_ready(self, frame_number: int, image: Any) -> None:
+        worker = self.sender()
+        if (
+            worker is None
+            or worker is not self.seek_worker
+            or not self.current_video
+            or worker.video.get("id") != self.current_video.get("id")
+            or frame_number != self._pending_seek_frame
+        ):
+            return
+        self._display_frame(
+            frame_number,
+            image,
+            refresh_maxn=not self._timeline_scrubbing,
+            refresh_annotations=not self._timeline_scrubbing,
+        )
+        if not self._timeline_scrubbing:
+            self._complete_timeline_seek(refresh_annotations=False)
+
+    def timeline_seek_failed(self, message: str) -> None:
+        worker = self.sender()
+        if worker is not self.seek_worker:
+            return
+        self._pending_seek_frame = None
+        self._timeline_scrubbing = False
+        self._resume_playback_after_scrub = False
+        self._configure_media_controls()
+        self.statusBar().showMessage(f"Could not seek video: {message}", 8000)
+
+    def _complete_timeline_seek(
+        self,
+        *,
+        refresh_annotations: bool = True,
+    ) -> None:
+        target = self.current_frame
+        self._pending_seek_frame = None
+        with QSignalBlocker(self.timeline):
+            self.timeline.setValue(target)
+        if refresh_annotations:
+            self.refresh_frame_annotations(refresh_maxn=True)
+        resume = self._resume_playback_after_scrub
+        self._resume_playback_after_scrub = False
+        self._configure_media_controls()
+        if (
+            resume
+            and self.current_video
+            and self.current_frame
+            < int(self.current_video["frame_count"]) - 1
+        ):
+            self.toggle_playback()
 
     def seek_frame(self, frame_number: int) -> None:
         if not self.current_video:
@@ -1309,7 +1632,14 @@ class MainWindow(QMainWindow):
             return
         self._display_frame(frame_number, image, refresh_maxn=True)
 
-    def _display_frame(self, frame_number: int, image: Any, *, refresh_maxn: bool) -> None:
+    def _display_frame(
+        self,
+        frame_number: int,
+        image: Any,
+        *,
+        refresh_maxn: bool,
+        refresh_annotations: bool = True,
+    ) -> None:
         context = (
             (str(self.current_video["id"]), int(frame_number))
             if self.current_video
@@ -1323,8 +1653,9 @@ class MainWindow(QMainWindow):
         height, width, channels = rgb.shape
         qimage = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
         self.canvas.set_frame(qimage)
-        with QSignalBlocker(self.timeline):
-            self.timeline.setValue(frame_number)
+        if not self._timeline_scrubbing:
+            with QSignalBlocker(self.timeline):
+                self.timeline.setValue(frame_number)
         if self.current_video and self.current_video.get("media_type") == "image":
             position, image_count = self._image_position()
             self.frame_label.setText(f"Image {position:,} of {image_count:,}")
@@ -1334,7 +1665,8 @@ class MainWindow(QMainWindow):
             self.frame_label.setText(
                 f"Frame {frame_number:,} · {self._timecode(seconds)} / {self._timecode(duration)}"
             )
-        self.refresh_frame_annotations(refresh_maxn=refresh_maxn)
+        if refresh_annotations:
+            self.refresh_frame_annotations(refresh_maxn=refresh_maxn)
 
     def toggle_playback(self) -> None:
         if not self.current_video or self.current_video.get("media_type") != "video" or not self.capture:
@@ -1417,11 +1749,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "sam_checkbox"):
             return
         playing = bool(self.playback_worker and self.playback_worker.isRunning())
+        seeking = bool(
+            self._timeline_scrubbing or self._pending_seek_frame is not None
+        )
         active = bool(
             self.sam_checkbox.isChecked()
             and self.sam_capability.available
             and self.current_image is not None
             and not playing
+            and not seeking
         )
         has_points = bool(self.sam_points)
         point_mode = active and not self.sam_manual_override
@@ -1648,9 +1984,90 @@ class MainWindow(QMainWindow):
             self._loading_annotation_editor = False
         if self.selected_annotation_id is None:
             self._show_active_species_in_editor()
+        self.refresh_focus_species()
+
+    def refresh_focus_species(self, *_args: Any) -> None:
+        if not hasattr(self, "focus_species_list"):
+            return
+        query = self.focus_species_search.text().strip().casefold()
+        selected_species_id = self.selected_species_id()
+        species = self.db.list_species()
+        matches = [
+            item
+            for item in species
+            if query
+            in (
+                f"{item['common_name']} {item['scientific_name']} "
+                f"{item['code']}"
+            ).casefold()
+        ]
+        with QSignalBlocker(self.focus_species_list):
+            self.focus_species_list.clear()
+            for item in matches:
+                scientific = str(item["scientific_name"] or "").strip()
+                common = str(item["common_name"]).strip()
+                details = [item["code"]]
+                if scientific and scientific.casefold() != common.casefold():
+                    details.insert(0, scientific)
+                row = QListWidgetItem(f"{common}\n{' - '.join(details)}")
+                row.setData(Qt.ItemDataRole.UserRole, item["id"])
+                row.setForeground(QColor(item["color"]))
+                self.focus_species_list.addItem(row)
+                if item["id"] == selected_species_id:
+                    self.focus_species_list.setCurrentItem(row)
+        selected_species = next(
+            (item for item in species if item["id"] == selected_species_id),
+            None,
+        )
+        self.focus_species_current.setText(
+            (
+                f"Selected: {selected_species['common_name']} - "
+                f"{selected_species['code']}"
+            )
+            if selected_species
+            else "Select a species before drawing"
+        )
+
+    def focus_species_changed(
+        self,
+        current: QListWidgetItem | None,
+        _previous: QListWidgetItem | None,
+    ) -> None:
+        if current is None:
+            return
+        species_id = current.data(Qt.ItemDataRole.UserRole)
+        if self.species_search.text():
+            with QSignalBlocker(self.species_search):
+                self.species_search.clear()
+            self.refresh_species()
+        self._select_species_in_list(species_id)
+        species = self.db.get_species(species_id)
+        self.focus_species_current.setText(
+            f"Selected: {species['common_name']} - {species['code']}"
+        )
+        self.statusBar().showMessage(
+            f"Next box species: {species['common_name']}",
+            3000,
+        )
 
     def active_species_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         self.edit_species_button.setEnabled(current is not None)
+        if hasattr(self, "focus_species_list"):
+            species_id = (
+                current.data(Qt.ItemDataRole.UserRole)
+                if current is not None
+                else None
+            )
+            with QSignalBlocker(self.focus_species_list):
+                for index in range(self.focus_species_list.count()):
+                    item = self.focus_species_list.item(index)
+                    if item.data(Qt.ItemDataRole.UserRole) == species_id:
+                        self.focus_species_list.setCurrentItem(item)
+                        break
+            if current is not None:
+                self.focus_species_current.setText(
+                    f"Selected: {current.text().splitlines()[0]}"
+                )
         if self.selected_annotation_id is None:
             self._show_active_species_in_editor(current)
 

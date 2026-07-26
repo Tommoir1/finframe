@@ -584,6 +584,27 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertTrue(window.species_panel.isHidden())
             self.assertTrue(window.annotation_panel.isHidden())
             self.assertTrue(window.bottom_tabs.isHidden())
+            self.assertFalse(window.focus_species_panel.isHidden())
+            self.assertGreater(window.focus_species_list.count(), 1)
+            alternative_species = db.list_species()[1]
+            focus_item = next(
+                window.focus_species_list.item(index)
+                for index in range(window.focus_species_list.count())
+                if window.focus_species_list.item(index).data(
+                    Qt.ItemDataRole.UserRole
+                )
+                == alternative_species["id"]
+            )
+            window.focus_species_list.setCurrentItem(focus_item)
+            self.app.processEvents()
+            self.assertEqual(
+                window.selected_species_id(),
+                alternative_species["id"],
+            )
+            self.assertIn(
+                alternative_species["common_name"],
+                window.focus_species_current.text(),
+            )
             self.assertGreater(window.canvas.width(), normal_canvas_size.width())
             self.assertGreater(window.canvas.height(), normal_canvas_size.height())
 
@@ -594,6 +615,7 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertFalse(window.species_panel.isHidden())
             self.assertFalse(window.annotation_panel.isHidden())
             self.assertFalse(window.bottom_tabs.isHidden())
+            self.assertTrue(window.focus_species_panel.isHidden())
             with patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
                 window.clear_all_video_boxes()
 
@@ -685,6 +707,73 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertGreater(window.current_frame, 0)
             self.assertIsNone(window.playback_worker)
             self.assertTrue(window.project_combo.isEnabled())
+            window.close()
+
+    def test_timeline_scrubbing_is_async_and_resumes_active_playback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "scrub-playback.avi"
+            writer = cv2.VideoWriter(
+                str(path),
+                cv2.VideoWriter_fourcc(*"MJPG"),
+                30,
+                (96, 54),
+            )
+            if not writer.isOpened():
+                self.skipTest("MJPG VideoWriter is unavailable")
+            for frame_number in range(240):
+                writer.write(
+                    np.full(
+                        (54, 96, 3),
+                        frame_number % 255,
+                        dtype=np.uint8,
+                    )
+                )
+            writer.release()
+            db = Database(root / "finframe.sqlite3")
+            project = db.create_project("Timeline scrubbing")
+            video = db.add_video(
+                project["id"],
+                path,
+                duration=8,
+                width=96,
+                height=54,
+                fps=30,
+                frame_count=240,
+                media_type="video",
+            )
+            window = MainWindow(db, root, show_startup_prompt=False)
+            window.refresh_projects(project["id"])
+            window.video_combo.setCurrentIndex(
+                window.video_combo.findData(video["id"])
+            )
+            window.toggle_playback()
+            self.app.processEvents()
+
+            self.assertIsNotNone(window.playback_worker)
+            self.assertTrue(window.timeline.isEnabled())
+            window.timeline_scrub_started()
+            for target in (45, 90, 135, 180):
+                window.timeline.setValue(target)
+                window.timeline_scrub_moved(target)
+            window.timeline_scrub_finished()
+
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                self.app.processEvents()
+                if (
+                    window.current_frame >= 180
+                    and window.playback_worker is not None
+                    and window.playback_worker.isRunning()
+                ):
+                    break
+                time.sleep(.002)
+
+            self.assertGreaterEqual(window.current_frame, 180)
+            self.assertIsNotNone(window.playback_worker)
+            self.assertTrue(window.playback_worker.isRunning())
+            self.assertTrue(window.timeline.isEnabled())
+            window.stop_playback(refresh=False)
             window.close()
 
 
