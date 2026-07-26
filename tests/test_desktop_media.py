@@ -16,16 +16,6 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from finframe.database import Database
 from finframe.main_window import MainWindow, PlaybackWorker, SpeciesDialog, suggested_species_code
 from finframe.sam_assist import SamCapability, SamMaskResult, box_from_mask, encode_mask_rle
-from finframe.seed_tracking import SeedTrackingSession
-
-
-class StableTracker:
-    def init(self, _image, box):
-        self.box = box
-        return True
-
-    def update(self, _image):
-        return True, self.box
 
 
 class FakeSamEngine:
@@ -80,7 +70,12 @@ class DesktopMediaTests(unittest.TestCase):
             window.video_combo.setCurrentIndex(window.video_combo.findData(first["id"]))
             self.app.processEvents()
 
-            self.assertEqual(window.following_button.text(), "Image ▶")
+            self.assertEqual(window.previous_button.text(), "Previous")
+            self.assertEqual(window.following_button.text(), "Next")
+            self.assertEqual(window.previous_button.toolTip(), "Previous image")
+            self.assertEqual(window.following_button.toolTip(), "Next image")
+            self.assertFalse(window.previous_button.icon().isNull())
+            self.assertFalse(window.following_button.icon().isNull())
             self.assertTrue(window.following_button.isEnabled())
             window.following_button.click()
             self.app.processEvents()
@@ -235,8 +230,13 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertIs(window.frame_label.parentWidget(), window.playback_controls_row)
             self.assertGreaterEqual(window.annotation_panel.minimumWidth(), 400)
             self.assertGreaterEqual(window.annotation_table.minimumHeight(), 180)
-            self.assertFalse(window.seed_tracking_checkbox.isChecked())
-            self.assertEqual(window.seed_tracking_status.text(), "Propagation off")
+            self.assertFalse(hasattr(window, "seed_tracking_checkbox"))
+            self.assertFalse(hasattr(window, "training_threshold"))
+            self.assertEqual(
+                window.train_now_button.text(),
+                "Train now from selected keyframes",
+            )
+            self.assertFalse(window.train_now_button.isEnabled())
             species_texts = [window.species_list.item(index).text() for index in range(window.species_list.count())]
             self.assertTrue(species_texts)
             self.assertFalse(any("Master species list" in text for text in species_texts))
@@ -450,7 +450,7 @@ class DesktopMediaTests(unittest.TestCase):
                 project["id"], path, duration=2, width=48, height=32,
                 fps=30, frame_count=60, media_type="video"
             )
-            worker = PlaybackWorker(db, video, 0, 6, SeedTrackingSession(), "Student")
+            worker = PlaybackWorker(video, 0, 6)
             event_processed = []
             emitted_frames = []
             worker.frame_ready.connect(lambda frame_number, _image: emitted_frames.append(frame_number))
@@ -466,42 +466,6 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertTrue(event_processed)
             self.assertTrue(emitted_frames)
             self.assertEqual(worker.last_frame, 59)
-
-    def test_background_playback_preserves_sequential_seed_tracking(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "tracked-playback.avi"
-            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30, (48, 32))
-            if not writer.isOpened():
-                self.skipTest("MJPG VideoWriter is unavailable")
-            first_image = np.full((32, 48, 3), 80, dtype=np.uint8)
-            for _ in range(12):
-                writer.write(first_image)
-            writer.release()
-            db = Database(root / "finframe.sqlite3")
-            project = db.create_project("Tracked playback")
-            video = db.add_video(
-                project["id"], path, duration=.4, width=48, height=32,
-                fps=30, frame_count=12, media_type="video"
-            )
-            species = db.list_species()[0]
-            annotation = db.add_annotation(
-                video_id=video["id"], frame_number=0, time_seconds=0,
-                species_id=species["id"], track_id="FISH-001", box=(.1, .1, .2, .2),
-                status="verified", source="manual", created_by="Student"
-            )
-            session = SeedTrackingSession(tracker_factory=StableTracker)
-            session.seed(annotation, first_image, 0)
-            worker = PlaybackWorker(db, video, 0, 6, session, "Student")
-            worker.start()
-            self.assertTrue(worker.wait(5000))
-
-            self.assertEqual(worker.last_frame, 11)
-            for frame_number in range(1, 12):
-                proposals = db.annotations_for_frame(video["id"], frame_number)
-                self.assertEqual(len(proposals), 1)
-                self.assertEqual(proposals[0]["track_id"], "FISH-001")
-                self.assertEqual(proposals[0]["status"], "pending")
 
     def test_window_plays_after_a_student_draws_an_annotation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -520,7 +484,6 @@ class DesktopMediaTests(unittest.TestCase):
                 fps=30, frame_count=12, media_type="video"
             )
             window = MainWindow(db, root, show_startup_prompt=False)
-            window.seed_tracking = SeedTrackingSession(tracker_factory=StableTracker)
             window.refresh_projects(project["id"])
             window.video_combo.setCurrentIndex(window.video_combo.findData(video["id"]))
             window.resize(1480, 920)
@@ -528,10 +491,8 @@ class DesktopMediaTests(unittest.TestCase):
             self.app.processEvents()
 
             window.create_manual_box((.1, .1, .2, .2))
-            self.assertEqual(window.seed_tracking.active_count, 0)
             loaded = db.annotations_for_frame(video["id"], 0)
             self.assertEqual(loaded[0]["frame_number"], 0)
-            window.seed_tracking_checkbox.setChecked(True)
             window.toggle_playback()
             worker = window.playback_worker
             self.assertIsNotNone(worker)
@@ -540,7 +501,7 @@ class DesktopMediaTests(unittest.TestCase):
 
             self.assertEqual(worker.error_message, "")
             self.assertEqual(worker.last_frame, 11)
-            self.assertEqual(len(db.annotations_for_frame(video["id"], 1)), 1)
+            self.assertEqual(db.annotations_for_frame(video["id"], 1), [])
             window.close()
 
     def test_clear_all_video_boxes_action_removes_only_the_selected_video_boxes(self):
@@ -592,14 +553,37 @@ class DesktopMediaTests(unittest.TestCase):
                 window.media_navigation_panel.geometry().top(),
             )
             normal_canvas_size = window.canvas.size()
-            window.enlarge_media_button.click()
+            normal_horizontal_sizes = window.main_splitter.sizes()
+            normal_vertical_sizes = window.workspace_splitter.sizes()
+            self.assertGreaterEqual(window.main_splitter.handleWidth(), 8)
+            self.assertGreaterEqual(window.workspace_splitter.handleWidth(), 8)
+            self.assertTrue(window.main_splitter.isCollapsible(0))
+            self.assertFalse(window.main_splitter.isCollapsible(1))
+            self.assertTrue(window.main_splitter.isCollapsible(2))
+            self.assertFalse(window.workspace_splitter.isCollapsible(0))
+            self.assertTrue(window.workspace_splitter.isCollapsible(1))
+            self.assertIn("resize", window.main_splitter.handle(1).toolTip().lower())
+            self.assertIn("resize", window.workspace_splitter.handle(1).toolTip().lower())
+
+            window.main_splitter.setSizes([0, sum(normal_horizontal_sizes), 0])
+            window.workspace_splitter.setSizes([sum(normal_vertical_sizes), 0])
+            self.app.processEvents()
+            self.assertEqual(window.main_splitter.sizes()[0], 0)
+            self.assertEqual(window.main_splitter.sizes()[2], 0)
+            self.assertEqual(window.workspace_splitter.sizes()[1], 0)
+            self.assertGreater(window.canvas.width(), normal_canvas_size.width())
+            self.assertGreater(window.canvas.height(), normal_canvas_size.height())
+
+            window.main_splitter.setSizes(normal_horizontal_sizes)
+            window.workspace_splitter.setSizes(normal_vertical_sizes)
+            self.app.processEvents()
+            window.toggle_media_focus()
             self.app.processEvents()
             self.assertTrue(window.media_focus_mode)
             self.assertTrue(window.project_toolbar.isHidden())
             self.assertTrue(window.species_panel.isHidden())
             self.assertTrue(window.annotation_panel.isHidden())
             self.assertTrue(window.bottom_tabs.isHidden())
-            self.assertEqual(window.enlarge_media_button.text(), "Restore layout")
             self.assertGreater(window.canvas.width(), normal_canvas_size.width())
             self.assertGreater(window.canvas.height(), normal_canvas_size.height())
 
@@ -610,7 +594,6 @@ class DesktopMediaTests(unittest.TestCase):
             self.assertFalse(window.species_panel.isHidden())
             self.assertFalse(window.annotation_panel.isHidden())
             self.assertFalse(window.bottom_tabs.isHidden())
-            self.assertEqual(window.enlarge_media_button.text(), "Enlarge player")
             with patch("finframe.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
                 window.clear_all_video_boxes()
 

@@ -509,60 +509,6 @@ class Database:
                 self._bump_dataset_revision(db)
         return self.get_annotation(annotation_id)
 
-    def add_pending_tracker_annotations(
-        self,
-        video_id: str,
-        frame_number: int,
-        time_seconds: float,
-        proposals: Iterable[dict[str, Any]],
-        *,
-        created_by: str = "",
-    ) -> int:
-        """Insert one playback frame's tracker proposals in a single transaction."""
-        frame = self.ensure_frame(video_id, frame_number, time_seconds)
-        candidates = list(proposals)
-        if not candidates:
-            return 0
-        now = utc_now()
-        rows = []
-        with self.connect() as db:
-            existing_tracks = {
-                str(row[0])
-                for row in db.execute("SELECT track_id FROM annotations WHERE frame_id=?", (frame["id"],))
-            }
-            for proposal in candidates:
-                track_id = str(proposal["track_id"])
-                if track_id in existing_tracks:
-                    continue
-                x, y, width, height = map(float, proposal["box"])
-                if not (
-                    0 <= x <= 1
-                    and 0 <= y <= 1
-                    and 0 < width <= 1
-                    and 0 < height <= 1
-                    and x + width <= 1.000001
-                    and y + height <= 1.000001
-                ):
-                    continue
-                rows.append((
-                    new_id("ann"), frame["id"], proposal["species_id"], track_id,
-                    x, y, width, height,
-                    proposal.get("life_stage", "Unknown"), proposal.get("activity", "Unknown"),
-                    int(bool(proposal.get("uncertain", False))), "pending", "tracker",
-                    proposal.get("confidence"), proposal.get("model_id"), created_by, 0, now, now,
-                ))
-                existing_tracks.add(track_id)
-            if rows:
-                self._invalidate_frame_review(db, frame["id"])
-                db.executemany(
-                    """INSERT INTO annotations(
-                           id,frame_id,species_id,track_id,x,y,width,height,life_stage,activity,uncertain,status,source,
-                           confidence,model_id,created_by,modified,created_at,updated_at
-                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    rows,
-                )
-        return len(rows)
-
     def get_annotation(self, annotation_id: str) -> dict[str, Any]:
         with self.connect() as db:
             row = db.execute(

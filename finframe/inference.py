@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .database import Database
-from .seed_tracking import BoundaryIdentityAllocator
+from .tracking_identity import BoundaryIdentityAllocator
 
 
 class InferenceError(RuntimeError):

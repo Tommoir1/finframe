@@ -4,7 +4,6 @@ import json
 import shutil
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +13,8 @@ from .dataset import build_yolo_training_dataset
 
 @dataclass
 class TrainingPolicy:
-    retrain_every_verified: int = 10
     minimum_verified: int = 20
     minimum_classes: int = 2
-    cooldown_minutes: int = 2
     epochs: int = 10
     image_size: int = 640
     patience: int = 4
@@ -36,7 +33,12 @@ class TrainingCoordinator:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         saved = db.get_setting(self.SETTINGS_KEY, {})
         defaults = asdict(TrainingPolicy())
-        self.policy = TrainingPolicy(**{**defaults, **(saved if isinstance(saved, dict) else {})})
+        saved_policy = (
+            {key: value for key, value in saved.items() if key in defaults}
+            if isinstance(saved, dict)
+            else {}
+        )
+        self.policy = TrainingPolicy(**{**defaults, **saved_policy})
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._message = "Idle"
@@ -58,34 +60,17 @@ class TrainingCoordinator:
             self._message = message
             self._progress = max(0, min(100, progress))
 
-    def _cooldown_elapsed(self) -> bool:
-        last_attempt = self.db.get_setting("last_training_attempt_at", "")
-        if not last_attempt:
-            return True
-        try:
-            elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_attempt)
-            return elapsed.total_seconds() >= self.policy.cooldown_minutes * 60
-        except (TypeError, ValueError):
-            return True
-
     def readiness(self) -> dict[str, Any]:
         stats = self.db.training_stats()
         last_revision = int(self.db.get_setting("last_trained_dataset_revision", 0) or 0)
         new_changes = max(0, stats["revision"] - last_revision)
-        ready = (
+        can_train = (
             stats["examples"] >= self.policy.minimum_verified
             and stats["classes"] >= self.policy.minimum_classes
-            and new_changes >= self.policy.retrain_every_verified
-            and self._cooldown_elapsed()
         )
-        return {**stats, "new_changes": new_changes, "ready": ready}
+        return {**stats, "new_changes": new_changes, "can_train": can_train}
 
-    def maybe_schedule(self, reason: str = "verified annotation threshold") -> bool:
-        if not self.readiness()["ready"]:
-            return False
-        return self.request_training(reason=reason, force=False)
-
-    def request_training(self, *, reason: str = "manual request", force: bool = True) -> bool:
+    def request_training(self, *, reason: str = "manual request") -> bool:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return False
@@ -96,12 +81,9 @@ class TrainingCoordinator:
                 0,
             )
             return False
-        if not force and not self.readiness()["ready"]:
-            return False
         active = self.db.active_model()
         base_model = active["weights_path"] if active and Path(active["weights_path"]).is_file() else self.policy.base_model
         run = self.db.create_training_run(reason, stats["examples"], base_model)
-        self.db.set_setting("last_training_attempt_at", utc_now())
         thread = threading.Thread(target=self._train, args=(run["id"], base_model, stats), daemon=True, name="finframe-training")
         with self._lock:
             self._thread = thread

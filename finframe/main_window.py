@@ -36,9 +36,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
     QSplitter,
     QStatusBar,
+    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -59,7 +59,6 @@ from .dataset import (
 )
 from .inference import InferenceEngine, InferenceError
 from .sam_assist import SamAssistEngine, SamMaskResult
-from .seed_tracking import SeedTrackingSession, SeedTrackingUnavailable
 from .training import TrainingCoordinator
 
 
@@ -273,27 +272,20 @@ class TrackingWorker(QThread):
 
 
 class PlaybackWorker(QThread):
-    """Decode video and propagate seeded boxes without blocking the Qt event loop."""
+    """Decode video without blocking the Qt event loop."""
 
     frame_ready = Signal(int, object)
-    tracking_status = Signal(str)
     failed = Signal(str)
 
     def __init__(
         self,
-        db: Database,
         video: dict[str, Any],
         start_frame: int,
         speed: float,
-        seed_tracking: SeedTrackingSession,
-        created_by: str,
     ):
         super().__init__()
-        self.db = db
         self.video = video
         self.start_frame = int(start_frame)
-        self.seed_tracking = seed_tracking
-        self.created_by = created_by
         self._stop_event = threading.Event()
         self._speed_lock = threading.Lock()
         self._speed = max(0.1, float(speed))
@@ -331,40 +323,13 @@ class PlaybackWorker(QThread):
                 self.last_frame = frame_number
                 self.last_image = image
 
-                ended = []
-                if self.seed_tracking.active_count:
-                    predictions, ended = self.seed_tracking.update(image, frame_number)
-                    self.db.add_pending_tracker_annotations(
-                        self.video["id"],
-                        frame_number,
-                        frame_number / fps,
-                        ({
-                            "species_id": prediction.species_id,
-                            "track_id": prediction.track_id,
-                            "box": prediction.box,
-                            "life_stage": prediction.life_stage,
-                            "activity": prediction.activity,
-                            "uncertain": prediction.uncertain,
-                        } for prediction in predictions),
-                        created_by=self.created_by,
-                    )
-                exited = sum(item.reason == "left_frame" for item in ended)
-                if exited:
-                    self.tracking_status.emit(
-                        f"{exited} track{'s' if exited != 1 else ''} ended at the frame boundary; any return will receive a new identity"
-                    )
-                elif ended:
-                    self.tracking_status.emit(
-                        f"{len(ended)} uncertain track{'s' if len(ended) != 1 else ''} stopped"
-                    )
-
                 now = perf_counter()
                 if now - last_emitted_at >= 1 / 30 or frame_number == frame_count - 1:
                     self.frame_ready.emit(frame_number, image)
                     last_emitted_at = now
 
                 speed = self.speed()
-                if self.seed_tracking.active_count or speed < 1:
+                if speed < 1:
                     step = 1
                     target_seconds = 1 / (fps * speed)
                 else:
@@ -450,7 +415,6 @@ class MainWindow(QMainWindow):
         self.sam_manual_override = False
         self.media_focus_mode = False
         self._normal_splitter_sizes: list[int] = []
-        self.seed_tracking = SeedTrackingSession()
         self.setWindowTitle("FinFrame — MaxN video annotation")
         self.resize(1480, 920)
         self._build_ui()
@@ -458,6 +422,7 @@ class MainWindow(QMainWindow):
         self.refresh_projects()
         self.training_timer = QTimer(self)
         self.training_timer.timeout.connect(self.refresh_training_status)
+        self.refresh_training_status()
         self.training_timer.start(1000)
         if show_startup_prompt:
             QTimer.singleShot(0, self.choose_startup_task)
@@ -509,9 +474,18 @@ class MainWindow(QMainWindow):
         central = QWidget()
         outer = QVBoxLayout(central)
         outer.setContentsMargins(10, 10, 10, 10)
+        workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.workspace_splitter = workspace_splitter
+        workspace_splitter.setObjectName("workspaceSplitter")
+        workspace_splitter.setHandleWidth(8)
+        workspace_splitter.setOpaqueResize(False)
+        outer.addWidget(workspace_splitter, 1)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter = splitter
-        outer.addWidget(splitter, 1)
+        splitter.setObjectName("paneSplitter")
+        splitter.setHandleWidth(8)
+        splitter.setOpaqueResize(False)
+        workspace_splitter.addWidget(splitter)
 
         species_panel = QGroupBox("Species taxonomy")
         self.species_panel = species_panel
@@ -568,9 +542,15 @@ class MainWindow(QMainWindow):
         controls.setContentsMargins(0, 0, 0, 0)
         self.play_button = QPushButton("▶")
         self.play_button.clicked.connect(self.toggle_playback)
-        self.previous_button = QPushButton("◀ Frame")
+        self.previous_button = QPushButton("Previous")
+        self.previous_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+        )
         self.previous_button.clicked.connect(lambda: self.navigate_relative(-1))
-        self.following_button = QPushButton("Frame ▶")
+        self.following_button = QPushButton("Next")
+        self.following_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+        )
         self.following_button.clicked.connect(lambda: self.navigate_relative(1))
         self.back_button = QPushButton("−5 s")
         self.back_button.clicked.connect(lambda: self.seek_video_relative(-round(self._fps() * 5)))
@@ -586,12 +566,6 @@ class MainWindow(QMainWindow):
         self.playback_speed.setCurrentIndex(self.playback_speed.findData(1))
         self.playback_speed.currentIndexChanged.connect(self.playback_speed_changed)
         controls.addWidget(self.playback_speed)
-        self.enlarge_media_button = QPushButton("Enlarge player")
-        self.enlarge_media_button.setToolTip(
-            "Temporarily hide the surrounding panels and enlarge the media workspace"
-        )
-        self.enlarge_media_button.clicked.connect(self.toggle_media_focus)
-        controls.addWidget(self.enlarge_media_button)
         controls.addStretch(1)
         self.frame_label = QLabel("No media")
         self.frame_label.setObjectName("mediaPositionLabel")
@@ -603,21 +577,6 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignHCenter,
         )
         self.canvas.imageRectChanged.connect(self.align_media_navigation)
-        seed_controls = QHBoxLayout()
-        self.seed_tracking_checkbox = QCheckBox("Enable box propagation while playing (experimental)")
-        self.seed_tracking_checkbox.setToolTip(
-            "Off by default. Enable only for continuous playback segments that you will review."
-        )
-        self.seed_tracking_checkbox.setChecked(False)
-        self.seed_tracking_checkbox.toggled.connect(self.seed_tracking_toggled)
-        stop_seed_tracking = QPushButton("Stop propagation")
-        stop_seed_tracking.clicked.connect(self.stop_seed_tracking)
-        self.seed_tracking_status = QLabel("Propagation off")
-        seed_controls.addWidget(self.seed_tracking_checkbox)
-        seed_controls.addWidget(stop_seed_tracking)
-        seed_controls.addWidget(self.seed_tracking_status)
-        seed_controls.addStretch(1)
-        video_layout.addLayout(seed_controls)
         sam_controls = QHBoxLayout()
         self.sam_checkbox = QCheckBox("Enable SAM-assisted click annotation")
         self.sam_checkbox.setObjectName("samAssistCheckbox")
@@ -755,11 +714,18 @@ class MainWindow(QMainWindow):
         annotation_layout.addLayout(action_row)
         annotation_layout.addStretch(1)
         splitter.addWidget(self.annotation_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, True)
         splitter.setSizes([230, 830, 420])
+        splitter.handle(1).setToolTip("Drag to resize the species and media panels")
+        splitter.handle(2).setToolTip("Drag to resize the media and annotation panels")
 
         tabs = QTabWidget()
         self.bottom_tabs = tabs
-        tabs.setMaximumHeight(245)
         maxn_tab = QWidget()
         maxn_layout = QVBoxLayout(maxn_tab)
         maxn_layout.setContentsMargins(8, 8, 8, 8)
@@ -791,22 +757,30 @@ class MainWindow(QMainWindow):
         training_tab = QWidget()
         training_layout = QGridLayout(training_tab)
         self.training_summary = QLabel("Training idle")
+        self.training_summary.setWordWrap(True)
         self.active_model_label = QLabel("Active model: none")
-        self.training_threshold = QSpinBox()
-        self.training_threshold.setRange(1, 500)
-        self.training_threshold.setValue(self.training.policy.retrain_every_verified)
-        self.training_threshold.valueChanged.connect(self.training_threshold_changed)
         self.training_progress = QProgressBar()
         self.train_now_button = QPushButton("Train now from selected keyframes")
-        self.train_now_button.clicked.connect(lambda: self.training.request_training(reason="student requested", force=True))
+        self.train_now_button.setToolTip(
+            "Training starts only when this button is pressed and enough reviewed data is available"
+        )
+        self.train_now_button.clicked.connect(
+            lambda: self.training.request_training(reason="student requested")
+        )
         training_layout.addWidget(self.training_summary, 0, 0, 1, 3)
         training_layout.addWidget(self.active_model_label, 1, 0, 1, 3)
-        training_layout.addWidget(QLabel("Retrain after selected-keyframe changes"), 2, 0)
-        training_layout.addWidget(self.training_threshold, 2, 1)
-        training_layout.addWidget(self.train_now_button, 2, 2)
+        training_layout.addWidget(self.train_now_button, 2, 0, 1, 3)
         training_layout.addWidget(self.training_progress, 3, 0, 1, 3)
         tabs.addTab(training_tab, "AI training")
-        outer.addWidget(tabs)
+        workspace_splitter.addWidget(tabs)
+        workspace_splitter.setStretchFactor(0, 1)
+        workspace_splitter.setStretchFactor(1, 0)
+        workspace_splitter.setCollapsible(0, False)
+        workspace_splitter.setCollapsible(1, True)
+        workspace_splitter.setSizes([665, 225])
+        workspace_splitter.handle(1).setToolTip(
+            "Drag to resize or collapse the MaxN, dataset and training panel"
+        )
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
@@ -845,10 +819,13 @@ class MainWindow(QMainWindow):
             QPushButton:disabled { color: #82918b; background: #edf1ef; }
             QPushButton#dangerButton { color: #8f2f25; background: #fff2ef; border-color: #dca69f; }
             QPushButton#dangerButton:hover { background: #ffe4de; }
-            QLineEdit, QComboBox, QSpinBox, QTextEdit { background: white; border: 1px solid #b8c8c1; border-radius: 5px; padding: 5px; }
+            QLineEdit, QComboBox, QTextEdit { background: white; border: 1px solid #b8c8c1; border-radius: 5px; padding: 5px; }
             QTableWidget, QListWidget { background: white; border: 1px solid #cbd8d2; alternate-background-color: #f4f8f6; }
             QScrollArea#annotationScroll { border: 0; background: transparent; }
             QHeaderView::section { background: #e8efeb; padding: 5px; border: 0; border-bottom: 1px solid #bdccc5; }
+            QSplitter::handle { background: #d2dfd9; border-radius: 3px; }
+            QSplitter::handle:hover { background: #70c3a6; }
+            QSplitter::handle:pressed { background: #41a88a; }
             QTabWidget::pane { border: 1px solid #cbd8d2; background: white; }
             QTabBar::tab { padding: 7px 16px; background: #e4ece8; }
             QTabBar::tab:selected { background: white; font-weight: 700; }
@@ -1145,9 +1122,7 @@ class MainWindow(QMainWindow):
             source_available = True
         if self.capture:
             self.capture.release()
-        self.seed_tracking.clear()
         self.review_segment_start = None
-        self._refresh_seed_tracking_status()
         self.capture = (
             cv2.VideoCapture(video["path"])
             if video.get("media_type") == "video" and source_available
@@ -1221,7 +1196,6 @@ class MainWindow(QMainWindow):
         ):
             control.setEnabled(playable and (control is self.play_button or not playing))
         self.playback_speed.setEnabled(playable)
-        self.seed_tracking_checkbox.setEnabled(playable and not playing)
         sam_available = bool(
             self.sam_capability.available
             and self.current_video
@@ -1236,12 +1210,6 @@ class MainWindow(QMainWindow):
             f"Permanently delete every bounding box from the selected {media_noun}"
         )
         self.clear_video_boxes_button.setEnabled(has_media and not playing)
-        self.enlarge_media_button.setEnabled(has_media)
-        self.enlarge_media_button.setText(
-            "Restore layout"
-            if self.media_focus_mode
-            else ("Enlarge image" if is_image else "Enlarge player")
-        )
         self.media_navigation_panel.setVisible(has_media)
         self.timeline_row.setVisible(has_media and not is_image)
         for video_only_control in (
@@ -1252,8 +1220,12 @@ class MainWindow(QMainWindow):
             self.playback_speed,
         ):
             video_only_control.setVisible(has_media and not is_image)
-        self.previous_button.setText("◀ Image" if is_image else "◀ Frame")
-        self.following_button.setText("Image ▶" if is_image else "Frame ▶")
+        previous_description = "Previous image" if is_image else "Previous frame"
+        next_description = "Next image" if is_image else "Next frame"
+        self.previous_button.setToolTip(previous_description)
+        self.previous_button.setAccessibleName(previous_description)
+        self.following_button.setToolTip(next_description)
+        self.following_button.setAccessibleName(next_description)
         self.previous_button.setEnabled(playable or (is_image and self._adjacent_image_index(-1) is not None))
         self.following_button.setEnabled(playable or (is_image and self._adjacent_image_index(1) is not None))
         self.canvas.setEnabled(not playing)
@@ -1309,9 +1281,7 @@ class MainWindow(QMainWindow):
         if frame_number != previous_frame and not self._persist_selected_annotation():
             return
         if self.current_image is not None and frame_number != previous_frame:
-            self.seed_tracking.clear()
             self.review_segment_start = None
-            self._refresh_seed_tracking_status("Propagation stopped after seeking")
         image = None
         if self.current_video.get("media_type") == "image":
             try:
@@ -1383,18 +1353,12 @@ class MainWindow(QMainWindow):
             self.seek_frame(0)
         if self.review_segment_start is None:
             self.review_segment_start = self.current_frame
-        if self.seed_tracking_checkbox.isChecked():
-            self._seed_current_frame_annotations()
         worker = PlaybackWorker(
-            self.db,
             self.current_video,
             self.current_frame,
             float(self.playback_speed.currentData() or 1),
-            self.seed_tracking,
-            self.current_project.get("observer", "") if self.current_project else "",
         )
         worker.frame_ready.connect(self.playback_frame_ready)
-        worker.tracking_status.connect(lambda message: self._refresh_seed_tracking_status(message))
         worker.failed.connect(lambda message: self.statusBar().showMessage(f"Playback stopped: {message}", 8000))
         worker.finished.connect(self.playback_finished)
         self.playback_worker = worker
@@ -1422,7 +1386,6 @@ class MainWindow(QMainWindow):
                 f"{self.sam_capability.model_name}: click the fish; "
                 "Shift-click or right-click regions that should be excluded"
             )
-        self._refresh_seed_tracking_status()
 
     def stop_playback(self, *, refresh: bool) -> None:
         worker = self.playback_worker
@@ -1443,7 +1406,6 @@ class MainWindow(QMainWindow):
                 f"{self.sam_capability.model_name}: click the fish; "
                 "Shift-click or right-click regions that should be excluded"
             )
-        self._refresh_seed_tracking_status()
 
     def playback_speed_changed(self) -> None:
         speed = float(self.playback_speed.currentData() or 1)
@@ -1651,56 +1613,9 @@ class MainWindow(QMainWindow):
         self.reset_sam_preview()
         self.selected_annotation_id = annotation["id"]
         self.refresh_frame_annotations()
-        self._seed_annotation(annotation)
-        self.training.maybe_schedule("verified SAM annotation threshold")
         self.sam_status.setText(
             f"Saved {annotation['common_name']} mask and box. Click the next fish."
         )
-
-    def seed_tracking_toggled(self, enabled: bool) -> None:
-        if not enabled:
-            self.seed_tracking.clear()
-            self._refresh_seed_tracking_status("Automatic box propagation disabled")
-        else:
-            self._refresh_seed_tracking_status("New boxes will propagate during playback")
-
-    def stop_seed_tracking(self) -> None:
-        self.seed_tracking_checkbox.setChecked(False)
-        self.seed_tracking.clear()
-        self._refresh_seed_tracking_status("Box propagation stopped")
-
-    def _refresh_seed_tracking_status(self, message: str | None = None) -> None:
-        if hasattr(self, "seed_tracking_status"):
-            if not self.seed_tracking_checkbox.isChecked():
-                self.seed_tracking_status.setText("Propagation off")
-            else:
-                count = self.seed_tracking.active_count
-                self.seed_tracking_status.setText(f"{count} active seeded track{'s' if count != 1 else ''}")
-        if message and self.statusBar():
-            self.statusBar().showMessage(message, 5000)
-
-    def _seed_annotation(self, annotation: dict[str, Any]) -> None:
-        if (
-            not self.seed_tracking_checkbox.isChecked()
-            or self.current_image is None
-            or not self.current_video
-            or self.current_video.get("media_type") != "video"
-        ):
-            return
-        if int(annotation["frame_number"]) != self.current_frame:
-            return
-        try:
-            self.seed_tracking.seed(annotation, self.current_image, self.current_frame)
-            self._refresh_seed_tracking_status()
-        except SeedTrackingUnavailable as exc:
-            self.seed_tracking_checkbox.setChecked(False)
-            self._refresh_seed_tracking_status(str(exc))
-
-    def _seed_current_frame_annotations(self) -> None:
-        if not self.current_video or self.current_image is None:
-            return
-        for annotation in self.db.annotations_for_frame(self.current_video["id"], self.current_frame):
-            self._seed_annotation(annotation)
 
     def refresh_species(self) -> None:
         query = self.species_search.text().strip().lower() if hasattr(self, "species_search") else ""
@@ -1802,9 +1717,6 @@ class MainWindow(QMainWindow):
             before[key] != updated[key]
             for key in ("species_id", "track_id", "life_stage", "activity", "uncertain")
         )
-        if before["track_id"] != updated["track_id"]:
-            self.seed_tracking.stop(before["track_id"])
-        self._seed_annotation(updated)
         self.annotation_editor_status.setText(
             f"Editing selected box: {updated['common_name']} · changes saved automatically"
         )
@@ -1829,8 +1741,6 @@ class MainWindow(QMainWindow):
             if not frame["reviewed"]:
                 self.training_keyframe_status.setText("Not complete; excluded from final MaxN and training")
             self.refresh_maxn()
-            if before["status"] == "verified":
-                self.training.maybe_schedule("verified annotation corrected")
         return True
 
     def add_species(self) -> None:
@@ -1916,11 +1826,8 @@ class MainWindow(QMainWindow):
         )
         self.selected_annotation_id = annotation["id"]
         self.refresh_frame_annotations()
-        self._seed_annotation(annotation)
         if suggestion:
             self.statusBar().showMessage("AI suggested a species for the drawn box — approve or correct it before it is counted", 8000)
-        else:
-            self.training.maybe_schedule("verified annotation threshold")
         if self.sam_manual_override:
             self.sam_manual_override = False
             self.canvas.set_sam_mode(self.sam_checkbox.isChecked())
@@ -1930,10 +1837,6 @@ class MainWindow(QMainWindow):
     def canvas_box_changed(self, annotation_id: str, box: tuple[float, float, float, float]) -> None:
         self.db.update_annotation(annotation_id, x=box[0], y=box[1], width=box[2], height=box[3])
         self.refresh_frame_annotations()
-        annotation = self.db.get_annotation(annotation_id)
-        self._seed_annotation(annotation)
-        if annotation["status"] == "verified":
-            self.training.maybe_schedule("verified box geometry changed")
 
     def frame_complete_toggled(self, complete: bool) -> None:
         if not self.current_video:
@@ -1941,9 +1844,7 @@ class MainWindow(QMainWindow):
         if not self._persist_selected_annotation():
             return
         try:
-            frame = self.db.set_frame_reviewed(self.current_video["id"], self.current_frame, complete)
-            if frame["reviewed"] and frame["training_selected"]:
-                self.training.maybe_schedule("complete training keyframe added")
+            self.db.set_frame_reviewed(self.current_video["id"], self.current_frame, complete)
         except ValueError as exc:
             with QSignalBlocker(self.frame_complete):
                 self.frame_complete.setChecked(False)
@@ -2076,15 +1977,11 @@ class MainWindow(QMainWindow):
             return
         self.db.review_annotation(self.selected_annotation_id, "approve")
         self.refresh_frame_annotations()
-        self.training.maybe_schedule("AI proposal approved or corrected")
 
     def reject_annotation(self) -> None:
         if not self.selected_annotation_id:
             return
-        annotation = self.db.get_annotation(self.selected_annotation_id)
         self.db.review_annotation(self.selected_annotation_id, "reject")
-        self.seed_tracking.stop(annotation["track_id"])
-        self._refresh_seed_tracking_status()
         self.selected_annotation_id = None
         self.refresh_frame_annotations()
 
@@ -2105,7 +2002,6 @@ class MainWindow(QMainWindow):
         for annotation in pending:
             self.db.review_annotation(annotation["id"], "approve")
         self.refresh_frame_annotations()
-        self.training.maybe_schedule("frame proposals approved")
 
     def approve_watched_segment(self) -> None:
         if not self.current_video or self.current_video.get("media_type") != "video":
@@ -2135,7 +2031,6 @@ class MainWindow(QMainWindow):
             for frame_number in sorted(frame_numbers):
                 self.db.set_frame_reviewed(self.current_video["id"], frame_number, True)
             self.review_segment_start = None
-            self.training.maybe_schedule("watched segment approved")
             self.refresh_frame_annotations()
             QMessageBox.information(
                 self,
@@ -2162,14 +2057,9 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(self, "Delete annotation", "Delete this bounding box?") != QMessageBox.StandardButton.Yes:
             return
-        annotation = self.db.get_annotation(self.selected_annotation_id)
         self.db.delete_annotation(self.selected_annotation_id)
-        self.seed_tracking.stop(annotation["track_id"])
-        self._refresh_seed_tracking_status()
         self.selected_annotation_id = None
         self.refresh_frame_annotations()
-        if annotation["status"] == "verified":
-            self.training.maybe_schedule("verified annotation deleted")
 
     def clear_all_video_boxes(self) -> None:
         if not self.current_video:
@@ -2219,12 +2109,10 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
         self.stop_playback(refresh=False)
-        self.seed_tracking.clear()
         self.selected_annotation_id = None
         self.review_segment_start = None
         self.reset_sam_preview()
         deleted = self.db.clear_video_annotations(self.current_video["id"])
-        self._refresh_seed_tracking_status()
         self.refresh_frame_annotations()
         self.refresh_training_status()
         self.statusBar().showMessage(
@@ -2277,7 +2165,6 @@ class MainWindow(QMainWindow):
         if self.tracking_worker and self.tracking_worker.isRunning():
             QMessageBox.information(self, "Tracking in progress", "Wait for the current tracking run to finish.")
             return
-        self.stop_seed_tracking()
         worker = TrackingWorker(self.db, self.inference, self.current_video, tracker, 0.25, 1)
         worker.progress.connect(lambda value, message: (self.tracking_progress.setValue(value), self.statusBar().showMessage(message)))
         worker.failed.connect(self.tracking_failed)
@@ -2331,19 +2218,21 @@ class MainWindow(QMainWindow):
                 "Live MaxN includes every verified box; Final MaxN includes completed frames only. Pending proposals count after approval."
             )
 
-    def training_threshold_changed(self, value: int) -> None:
-        self.training.update_policy(retrain_every_verified=value)
-
     def refresh_training_status(self) -> None:
         status = self.training.status()
         readiness = self.training.readiness()
-        if readiness["ready"] and not status["running"]:
-            self.training.maybe_schedule("automatic verified dataset threshold")
-            status = self.training.status()
+        readiness_text = (
+            "Ready — press Train now to start"
+            if readiness["can_train"]
+            else (
+                f"Need at least {self.training.policy.minimum_verified} selected boxes "
+                f"across {self.training.policy.minimum_classes} species"
+            )
+        )
         self.training_summary.setText(
             f"{readiness['frames']:,} diverse complete keyframes with {readiness['examples']:,} fish boxes across "
             f"{readiness['videos']} media sources and {readiness['classes']} species · "
-            f"{readiness['new_changes']} training-dataset changes since training"
+            f"{readiness['new_changes']} training-dataset changes since training · {readiness_text}"
         )
         self.dataset_stats.setText(
             f"{readiness['verified_total']:,} verified observation boxes · {readiness['reviewed_frames']:,} complete frames · "
@@ -2351,11 +2240,15 @@ class MainWindow(QMainWindow):
         )
         self.training_progress.setValue(status["progress"])
         self.training_progress.setFormat(status["message"])
-        self.train_now_button.setEnabled(not status["running"])
+        self.train_now_button.setEnabled(readiness["can_train"] and not status["running"])
         active = self.db.active_model()
         self.active_model_label.setText(
             f"Active model: v{active['version']} · mAP50-95 {active['map50_95']:.3f}" if active and active["map50_95"] is not None
-            else (f"Active model: v{active['version']}" if active else "Active model: none — manual labels will seed the first training run")
+            else (
+                f"Active model: v{active['version']}"
+                if active
+                else "Active model: none — training starts only when Train now is pressed"
+            )
         )
 
     def export_training_data(self, fmt: str) -> None:
@@ -2438,7 +2331,6 @@ class MainWindow(QMainWindow):
         QApplication.restoreOverrideCursor()
         if imported_projects:
             self.refresh_projects(imported_projects[-1]["id"])
-            self.training.maybe_schedule("completed training keyframes imported")
             QMessageBox.information(
                 self, "Contributions imported",
                 f"Imported {len(imported_projects):,} project{'s' if len(imported_projects) != 1 else ''} and "

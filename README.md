@@ -27,23 +27,22 @@ For a teaching cohort, each student exports one `.finframe.zip` contribution. It
 - Native PySide6 desktop interface; no browser or separate local web server
 - First-class still-image annotation with multi-file and recursive folder import; Image arrows move through the imported photo set
 - Responsive background video playback from 0.5× to 6×, timeline seeking, frame stepping and five-second jumps
-- Reversible enlarged-media mode that hides surrounding panels; use the button or F11 to enlarge and Esc to restore
+- Draggable taxonomy, annotation and results panes for resizing the media workspace; F11 still provides a temporary media-only view and Esc restores it
 - Bounding-box drawing, selection, movement and resizing, with annotation details saved automatically
 - Optional single-click SAM masks with positive/negative correction points, explicit acceptance and manual-box fallback
-- Opt-in experimental box-seeded propagation during continuous playback, with corrected boxes re-seeding the tracker
 - Shared 99-species taxonomy populated from `species_list.xlsx` → first `Master Sheet`, with search-as-you-type selection, stable codes and track IDs
 - Life stage, activity, uncertainty and student/observer attribution
 - Automatic per-species Live MaxN plus complete-frame Final MaxN
 - Audited `pending`, `verified` and `rejected` annotation states
 - AI suggestions on the current frame
 - Species suggestions for newly drawn boxes once an active detector exists; these remain pending until reviewed
-- Whole-video ByteTrack or BoT-SORT proposals using the active detector
+- Detector-driven whole-video ByteTrack or BoT-SORT proposals once a trained model is active
 - COCO and YOLO exports across completed observations in every project
 - Optional extraction of native-resolution labelled JPEG frames
 - Project JSON backups and label-only exports with frame manifests
 - Portable `.finframe.zip` student contributions and batch instructor import
 - Duplicate-contribution protection in the combined training database
-- Automatic detector retraining and model versioning
+- Explicit Train now workflow with evaluated detector model versioning
 
 ## Approval and dataset safety
 
@@ -62,20 +61,20 @@ Approval operates at two levels. Box approval means that one proposed label is c
 
 All complete frames can support MaxN, but using every tracked video frame for training would overweight near-identical images. FinFrame therefore always selects complete manual/corrected frames and samples unchanged tracker/AI frames at most once per second by default. Complete sampled frames with no fish are retained as negative training images. One selected frame containing five fish is one training image with five bounding-box labels; a tracker following those fish through 100 frames does not become 500 independent training examples.
 
-Playback speed is a target. Without active seeded boxes, FinFrame can skip display frames at high speed. While CPU box propagation is active it processes frames sequentially to preserve tracking accuracy, so older hardware may run below the selected 6× target; the interface remains responsive and proposals are still retained.
+Playback speed is a target. FinFrame may skip display frames at high speed so ordinary review remains responsive on older hardware. Manual boxes are not propagated during playback. Once a trained detector is active, ByteTrack or BoT-SORT runs as a separate whole-video process and writes only pending proposals for student review.
 
 Track IDs describe one uninterrupted period of visibility, not an inferred biological individual. When a tracked box reaches the image boundary and disappears, FinFrame permanently retires that identity. A fish entering later always receives a new identity. FinFrame does not attempt re-identification or suggest that a returning fish is the same individual. Brief missed detections away from the image boundary may retain the existing identity as an in-frame occlusion.
 
-## Frequent retraining
+## Manual model training
 
-The default policy checks for retraining after every **10 selected-keyframe changes**, with a two-minute cooldown. A training-dataset change includes:
+Training never starts automatically. The **AI training** tab enables **Train now from selected keyframes** after the installation contains at least 20 selected boxes across at least two species. A training-dataset change includes:
 
 - completing a useful manual or corrected frame
 - selecting a temporally spaced approved tracker/AI frame
 - selecting a reviewed negative frame
 - changing or deleting a label on a previously selected frame
 
-Training starts after at least 20 boxes across at least two species in selected keyframes. Every run rebuilds the detector dataset from all complete selected keyframes across all projects, images and videos. Pending predictions and incomplete frames cannot reinforce the model.
+Pressing **Train now** rebuilds the detector dataset from all complete selected keyframes across all projects, images and videos. Pending predictions and incomplete frames cannot reinforce the model. Students can continue annotating without an unexpected training job consuming laptop resources.
 
 Each candidate is evaluated on held-out data. The current model remains active unless the candidate meets the configured mAP50-95 improvement gate. When at least two videos exist, complete videos are held out; a one-video temporal split is marked as preliminary.
 

@@ -54,36 +54,8 @@ class DatabaseWorkflowTests(unittest.TestCase):
 
         self.assertEqual(self.db.annotated_frame_numbers_in_range(self.video["id"], 0, 40), [10, 30])
 
-    def test_playback_tracker_proposals_are_inserted_once_per_frame_batch(self):
-        proposals = [
-            {
-                "species_id": self.species[0]["id"],
-                "track_id": "FISH-001",
-                "box": (.1, .1, .2, .2),
-                "life_stage": "Adult",
-                "activity": "Passing",
-            },
-            {
-                "species_id": self.species[1]["id"],
-                "track_id": "FISH-002",
-                "box": (.4, .2, .2, .2),
-            },
-        ]
-        added = self.db.add_pending_tracker_annotations(
-            self.video["id"], 12, .48, proposals, created_by="Student One"
-        )
-        repeated = self.db.add_pending_tracker_annotations(
-            self.video["id"], 12, .48, proposals, created_by="Student One"
-        )
-
-        annotations = self.db.annotations_for_frame(self.video["id"], 12)
-        self.assertEqual(added, 2)
-        self.assertEqual(repeated, 0)
-        self.assertEqual({item["track_id"] for item in annotations}, {"FISH-001", "FISH-002"})
-        self.assertTrue(all(item["status"] == "pending" and item["source"] == "tracker" for item in annotations))
-
-    def test_detector_rerun_preserves_pending_box_seed_proposals(self):
-        seed = self.add(0, 10, "pending", "tracker")
+    def test_detector_rerun_preserves_unlinked_pending_tracker_proposals(self):
+        unlinked = self.add(0, 10, "pending", "tracker")
         model = self.db.register_model("detector.pt", 0.5, 20, "training-run")
         detector = self.db.add_annotation(
             video_id=self.video["id"], frame_number=20, time_seconds=.8,
@@ -92,7 +64,7 @@ class DatabaseWorkflowTests(unittest.TestCase):
         )
         deleted = self.db.delete_pending_proposals(self.video["id"], source="tracker", model_only=True)
         self.assertEqual(deleted, 1)
-        self.assertEqual(self.db.get_annotation(seed["id"])["status"], "pending")
+        self.assertEqual(self.db.get_annotation(unlinked["id"])["status"], "pending")
         with self.assertRaises(KeyError):
             self.db.get_annotation(detector["id"])
 
